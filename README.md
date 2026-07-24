@@ -120,6 +120,8 @@ We provide detailed step-by-step examples for running inference of our pre-train
 
 **Remote Inference**: The client package (`xense-client`) provides a websocket-based policy client so that model inference can run on a more powerful remote GPU server while the robot runtime streams observations and receives action chunks in real time. See `examples/simple_client/` for a minimal reference implementation.
 
+**Dream-Tac on BiFlexiv**: `examples/dreamtac_bi_flexiv/` provides the robot-side adapter for the seven-view Dream-Tac earbud policy. It keeps LeRobot-Xense hardware control and `xense-client` runtime/chunking, while replacing the OpenPI model server with the Dream-Tac server.
+
 **Test inference without a robot**: We provide a [script](examples/simple_client/README.md) for testing inference without a robot. This script will generate a random observation and run inference with the model. See [here](examples/simple_client/README.md) for more details.
 
 ## Fine-Tuning Base Models on Your Own Data
