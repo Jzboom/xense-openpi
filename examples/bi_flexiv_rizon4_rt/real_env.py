@@ -1,6 +1,8 @@
 """Real environment for BiFlexiv Rizon4 RT dual-arm robot.
 
-Wraps lerobot BiFlexivRizon4RT for use with OpenPI inference.
+Wraps lerobot BiFlexivRizon4RT for use with OpenPI inference. The bench it
+drives comes from a recipe YAML (see ``recipe.py`` and ``recipes/README.md``);
+run tuning comes from the CLI.
 
 State/action format (20D):
     [left_tcp.x/y/z/r1-r6 (0-8), right_tcp.x/y/z/r1-r6 (9-17),
@@ -35,26 +37,35 @@ class BiFlexivRizon4RTRealEnv:
 
     def __init__(
         self,
-        bi_mount_type: str = "forward",
-        use_force: bool = False,
-        go_to_start: bool = True,
-        stiffness_ratio: float = 0.2,
-        inner_control_hz: int = 1000,
-        interpolate_cmds: bool = True,
-        enable_tactile_sensors: bool = True,
-        log_level: str = "INFO",
+        robot_config: BiFlexivRizon4RTConfig,
         setup_robot: bool = True,
     ):
-        self.config = BiFlexivRizon4RTConfig(
-            bi_mount_type=bi_mount_type,
-            use_force=use_force,
-            go_to_start=go_to_start,
-            stiffness_ratio=stiffness_ratio,
-            inner_control_hz=inner_control_hz,
-            interpolate_cmds=interpolate_cmds,
-            enable_tactile_sensors=enable_tactile_sensors,
-            log_level=log_level,
-        )
+        """Wrap an already-decoded robot config.
+
+        Args:
+            robot_config: Built by ``recipe.load_robot_config`` — the recipe
+                supplies the bench hardware (arm SNs, start/home poses, head
+                camera, gripper block) that the lerobot config dataclass no
+                longer carries, with the CLI's run tuning merged on top.
+            setup_robot: Connect immediately.
+        """
+        self.config = robot_config
+
+        # The 20D state/action vectors end in left/right_gripper.pos, and
+        # lerobot only emits those keys for a side that actually has a gripper —
+        # so dropping one would KeyError on the first observation rather than
+        # shrinking the vector. Say so up front.
+        missing = [
+            side
+            for side, cfg in (("left", self.config.left_gripper), ("right", self.config.right_gripper))
+            if cfg is None
+        ]
+        if missing:
+            raise ValueError(
+                f"Recipe configures no gripper on: {', '.join(missing)}. This example's state and "
+                "action vectors are 20D ending in left/right_gripper.pos, so both sides need one."
+            )
+
         self.robot = make_robot_from_config(self.config)
 
         if setup_robot:
@@ -62,7 +73,11 @@ class BiFlexivRizon4RTRealEnv:
 
     def setup_robot(self) -> None:
         """Connect and initialize both arms."""
-        logger.info("Connecting to BiFlexiv Rizon4 RT robot...")
+        logger.info(
+            f"Connecting to BiFlexiv Rizon4 RT robot "
+            f"(left={self.config.left_robot_sn}, right={self.config.right_robot_sn}, "
+            f"gripper={self.config.gripper.type if self.config.gripper else None})..."
+        )
         try:
             self.robot.connect(calibrate=False, go_to_start=self.config.go_to_start)
             logger.info("BiFlexiv Rizon4 RT connected and ready")
@@ -115,12 +130,12 @@ class BiFlexivRizon4RTRealEnv:
                 t0 = time.time()
                 while not self.robot.rt_moving:
                     if time.time() - t0 > 1.0:
-                        logger.warning("RT trajectory never started, proceeding anyway")
+                        logger.warn("RT trajectory never started, proceeding anyway")
                         break
                     time.sleep(0.001)
                 while self.robot.rt_moving:
                     if time.time() - t0 > 15.0:
-                        logger.warning("Reset trajectory timeout, proceeding anyway")
+                        logger.warn("Reset trajectory timeout, proceeding anyway")
                         break
                     time.sleep(0.05)
                 logger.info("BiFlexiv Rizon4 RT reset completed")
@@ -210,4 +225,4 @@ class BiFlexivRizon4RTRealEnv:
                 time.sleep(1)
                 logger.info("BiFlexiv Rizon4 RT disconnected")
             except Exception as e:
-                logger.warning(f"Error during disconnect: {e}")
+                logger.warn(f"Error during disconnect: {e}")

@@ -1,11 +1,86 @@
 # YAML Config System — Feature Notes & Changelog
 
-**Branch:** `feature/yaml-config-per-task`
-**Status:** ready for review; not yet merged to `main`
+> **Everything below the "Phase 1" heading describes the original dual-track
+> design and is kept for context only.** `_CONFIGS` no longer exists; see
+> Phase 2 first, then [`configs/README.md`](../configs/README.md) for how the
+> system works today.
 
-This document describes a new way to define training configs as **one YAML file
-per task**, alongside the existing Python `_CONFIGS` list. Old configs keep
-working; new tasks should prefer YAML to avoid merge conflicts in the
+---
+
+## Phase 2 — `_CONFIGS` removed
+
+Phase 1 shipped YAML *alongside* the Python `_CONFIGS` list. Two sources of
+truth for the same thing drifted almost immediately: by the time this phase
+started, `configs/_examples/` held a `..._newbalacne_..._0515_h100.yaml` whose
+`_CONFIGS` twin had been edited in place into `_0616_h100`, and the equivalence
+test that was supposed to catch exactly that had been red on `main`. So YAML is
+now the only place configs live.
+
+**What made the last 7 configs migratable.** Each blocker got a mechanism rather
+than an exception:
+
+| Blocker | Fix |
+|---|---|
+| `SimpleDataConfig(data_transforms=lambda model: ...)` in the three DROID inference configs | `DroidInferenceDataConfig` — the lambda's only dynamic input was the model type, and `create()` already receives the model config, so no closure is needed. Verified to produce a byte-identical `DataConfig` for all three. |
+| `repack_transforms=Group(inputs=[RepackTransform({...})])` in the ALOHA configs | `registry.TRANSFORMS` + a `_build_group` in the loader. `RepackTransform` carries nothing but a nested `str -> str` mapping, so it serializes cleanly. |
+| `assets=AssetsConfig(asset_id="droid")` | The loader builds any nested block whose field annotation is a dataclass, instead of hard-coding `base_config`. No `type:` needed — the annotation already names the class. |
+| `freeze_filter=Pi0Config(...).get_freeze_filter()` on LoRA configs | The loader already re-derived this from the `*_lora` variants on load; `dump` now skips it for the same reason, making the round-trip symmetric. |
+
+**What stayed in Python.** Only the five RoboArena baselines, via
+`config._generated_configs()`. They pass tokenizer *classes* as config values,
+and they're generated as a family rather than authored one file at a time — a
+YAML file per baseline would be the wrong shape for them.
+
+Their data factories moved to `DroidInferenceDataConfig` all the same, because
+every one of them was broken: each lambda called
+`DroidInputs(action_dim=model.action_dim, ...)`, a keyword that transform has
+never had, and `paligemma_diffusion_droid` additionally omitted the required
+`model_type`. Nothing raised, because a lambda body only runs when
+`data.create()` is called, and nobody had served those baselines from this repo.
+Routing them through the registered factory fixes the call and derives
+`model_type` from each config's own model (`PI0_FAST` for the four FAST
+baselines, `PI0` for the diffusion one).
+`config_yaml_test.py::test_generated_configs_build_their_data_pipeline` now calls
+`create()` on every generated config so a hand-built pipeline can't be broken
+silently again.
+
+**Order of operations.** All 13 configs were dumped and the (then still
+existing) equivalence test was run to prove every YAML was `==` to the Python
+config it replaced. Only then was `_CONFIGS` deleted. `config.py` went from 985
+lines to 679 — schema and lookup, no config data.
+
+**Interface changes:**
+
+- `cli()` now builds its choices from `all_configs()` (every YAML on disk plus
+  the generated ones). Same UX: `train.py <name> --exp-name=... --batch-size=64`,
+  and `--help` still lists every config.
+- `get_config()`'s third lookup tier is `_generated_configs()` instead of
+  `_CONFIGS_DICT`.
+- `yaml_examples_equivalence_test.py` is gone (nothing left to compare against);
+  `config_yaml_test.py` replaces it — every example parses, names don't collide
+  with generated ones, `all_configs()` loads clean, and no example may carry a
+  machine-local `/home/...` path.
+- `scripts/migrate_configs_to_yaml.py` → `scripts/dump_config_to_yaml.py`, now a
+  general "dump any config by name" tool rather than a one-shot migration.
+- Two configs that pointed `weight_loader.params_path` at another contributor's
+  laptop (`/home/li/hubo/...`, `/home/ubuntu/...`) now point at
+  `gs://openpi-assets/checkpoints/pi05_base/params`, with the original path
+  recorded in a comment. Continue from a local checkpoint with
+  `--weight_loader.params_path=...` on the CLI.
+- `..._newbalacne_..._0515_h100.yaml` was deleted. It was the orphan half of the
+  drift described above: its `_CONFIGS` twin had been edited in place into
+  `_0616_h100` (different `repo_id`, prompt and step count), leaving a YAML for a
+  run nobody was doing.
+
+---
+
+## Phase 1 — YAML alongside `_CONFIGS` (historical)
+
+**Branch:** `feature/yaml-config-per-task`
+
+This section describes the original design: training configs as **one YAML file
+per task**, alongside the existing Python `_CONFIGS` list. Old configs kept
+working; new tasks were to prefer YAML to avoid merge conflicts in the
 919-line central `config.py`.
 
 ---

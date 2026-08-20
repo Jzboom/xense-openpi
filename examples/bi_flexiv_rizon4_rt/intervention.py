@@ -23,11 +23,10 @@ The module exposes three collaborating pieces:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 from lerobot.utils.robot_utils import get_logger
 import numpy as np
-from typing_extensions import override
 from xense_client import action_chunk_broker as _action_chunk_broker
 from xense_client.runtime import agent as _agent
 from xense_client.runtime import environment as _environment
@@ -148,7 +147,7 @@ class Pico4InterventionController:
             except Exception as e:
                 # Abort the engagement — otherwise the arm would follow a stale
                 # teleop target. Stay on policy; try again on the next rising edge.
-                logger.warning(f"Pico4 handoff aborted, could not read TCP pose: {e}")
+                logger.warn(f"Pico4 handoff aborted, could not read TCP pose: {e}")
                 self._was_active = was_active
                 self._active = False
                 return False
@@ -201,7 +200,7 @@ class Pico4InterventionController:
         try:
             self._teleop.disconnect()
         except Exception as e:
-            logger.warning(f"Error disconnecting BiPico4: {e}")
+            logger.warn(f"Error disconnecting BiPico4: {e}")
 
 
 class InterventionEnvironmentWrapper(_environment.Environment):

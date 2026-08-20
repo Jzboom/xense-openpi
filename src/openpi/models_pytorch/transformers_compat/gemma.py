@@ -124,6 +124,10 @@ class PiGemmaAttention(_mg.GemmaAttention):
         key_states = self.k_proj(hidden_states).view(hidden_shape).transpose(1, 2)
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
+        if position_embeddings is None:
+            # The parameter is Optional only to match the HF attention signature;
+            # this layer never computes rotary embeddings itself.
+            raise ValueError("position_embeddings is required by this attention layer.")
         cos, sin = position_embeddings
         query_states, key_states = _mg.apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
@@ -170,9 +174,7 @@ class PiGemmaDecoderLayer(_mg.GemmaDecoderLayer):
         self.self_attn = PiGemmaAttention(config=config, layer_idx=layer_idx)
         cond_dim = config.adarms_cond_dim if getattr(config, "use_adarms", False) else None
         self.input_layernorm = PiGemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim)
-        self.post_attention_layernorm = PiGemmaRMSNorm(
-            config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim
-        )
+        self.post_attention_layernorm = PiGemmaRMSNorm(config.hidden_size, eps=config.rms_norm_eps, cond_dim=cond_dim)
 
     def forward(
         self,

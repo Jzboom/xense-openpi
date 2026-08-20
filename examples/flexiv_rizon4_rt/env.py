@@ -1,11 +1,11 @@
 """OpenPI Environment wrapper for Flexiv Rizon4 RT robot."""
 
-from typing import ClassVar
+from typing import ClassVar, override
 
 import einops
+from lerobot.robots.flexiv_rizon4_rt.config_flexiv_rizon4_rt import FlexivRizon4RTConfig
 from lerobot.utils.robot_utils import get_logger
 import numpy as np
-from typing_extensions import override
 from xense_client import image_tools
 from xense_client.runtime import environment as _environment
 
@@ -32,47 +32,14 @@ class FlexivRizon4RTEnvironment(_environment.Environment):
 
     def __init__(
         self,
-        robot_sn: str = "Rizon4-063423",
-        use_gripper: bool = True,
-        use_force: bool = False,
-        go_to_start: bool = True,
-        log_level: str = "INFO",
+        robot_config: FlexivRizon4RTConfig,
         render_height: int = 224,
         render_width: int = 224,
         setup_robot: bool = True,
-        # Gripper settings
-        gripper_type: str = "flare_gripper",
-        gripper_mac_addr: str = "e2b26adbb104",
-        gripper_cam_size: tuple[int, int] = (640, 480),
-        gripper_rectify_size: tuple[int, int] = (400, 700),
-        gripper_max_pos: float = 85.0,
-        # RT-specific settings
-        stiffness_ratio: float = 0.2,
-        start_position_degree: list[float] | None = None,
-        zero_ft_sensor_on_connect: bool = True,
-        inner_control_hz: int = 1000,
-        interpolate_cmds: bool = True,
-        # External cameras
-        cameras: dict | None = None,
     ) -> None:
         self._env = _real_env.FlexivRizon4RTRealEnv(
-            robot_sn=robot_sn,
-            use_gripper=use_gripper,
-            use_force=use_force,
-            go_to_start=go_to_start,
-            log_level=log_level,
+            robot_config=robot_config,
             setup_robot=setup_robot,
-            gripper_type=gripper_type,
-            gripper_mac_addr=gripper_mac_addr,
-            gripper_cam_size=gripper_cam_size,
-            gripper_rectify_size=gripper_rectify_size,
-            gripper_max_pos=gripper_max_pos,
-            stiffness_ratio=stiffness_ratio,
-            start_position_degree=start_position_degree,
-            zero_ft_sensor_on_connect=zero_ft_sensor_on_connect,
-            inner_control_hz=inner_control_hz,
-            interpolate_cmds=interpolate_cmds,
-            cameras=cameras,
         )
         self._render_height = render_height
         self._render_width = render_width

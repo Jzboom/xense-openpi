@@ -1,8 +1,7 @@
-from typing import Dict
+from typing import override
 
 import numpy as np
 import tree
-from typing_extensions import override
 
 from xense_client import base_policy as _base_policy
 
@@ -21,10 +20,10 @@ class ActionChunkBroker(_base_policy.BasePolicy):
         self._action_horizon = action_horizon
         self._cur_step: int = 0
 
-        self._last_results: Dict[str, np.ndarray] | None = None
+        self._last_results: dict[str, np.ndarray] | None = None
 
     @override
-    def infer(self, obs: Dict) -> Dict:  # noqa: UP006
+    def infer(self, obs: dict) -> dict:
         if self._last_results is None:
             self._last_results = self._policy.infer(obs)
             self._cur_step = 0
@@ -32,8 +31,7 @@ class ActionChunkBroker(_base_policy.BasePolicy):
         def slicer(x):
             if isinstance(x, np.ndarray):
                 return x[self._cur_step, ...]
-            else:
-                return x
+            return x
 
         results = tree.map_structure(slicer, self._last_results)
         self._cur_step += 1

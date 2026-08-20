@@ -7,33 +7,41 @@ for deterministic streaming Cartesian motion force control.
 Only RT_CARTESIAN_MOTION_FORCE mode is supported (no joint impedance).
 Action space: 10D [tcp.x, tcp.y, tcp.z, tcp.r1-r6, gripper.pos]
 
+--args.robot-recipe picks the bench: a name resolves against
+examples/flexiv_rizon4_rt/recipes/, a path loads any recipe YAML. It carries the
+arm SN, start pose, cameras and the typed gripper block. See recipes/README.md —
+the flat gripper_* knobs and the flare_gripper backend are gone upstream, and
+this driver does no camera auto-discovery, so the wrist camera is pinned there.
+
 Example usage:
     # Basic inference (non-RTC mode)
     python -m examples.flexiv_rizon4_rt.main \\
-        --host 192.168.2.215 \\
-        --port 8000
+        --args.robot-recipe default \\
+        --args.host 192.168.2.215 \\
+        --args.port 8000
 
     # With RTC enabled
     python -m examples.flexiv_rizon4_rt.main \\
-        --host 192.168.2.215 \\
-        --port 8000 \\
-        --rtc_enabled
+        --args.robot-recipe default \\
+        --args.host 192.168.2.215 \\
+        --args.port 8000 \\
+        --args.rtc-enabled
 
     # Dry run (robot connected but actions not executed)
     python -m examples.flexiv_rizon4_rt.main \\
-        --host 192.168.2.215 \\
-        --port 8000 \\
-        --dry_run
+        --args.robot-recipe default \\
+        --args.host 192.168.2.215 \\
+        --args.port 8000 \\
+        --args.dry-run
 """
 
 from dataclasses import dataclass
-from dataclasses import field
+import pathlib
 import signal
 import sys
+from typing import override
 
 from lerobot.utils.robot_utils import get_logger
-from typing_extensions import override
-import tyro
 from xense_client import action_chunk_broker
 from xense_client import rtc_action_chunk_broker
 from xense_client import websocket_client_policy as _websocket_client_policy
@@ -42,8 +50,13 @@ from xense_client.runtime import runtime as _runtime
 from xense_client.runtime.agents import policy_agent as _policy_agent
 
 import examples.flexiv_rizon4_rt.env as _env
+import examples.flexiv_rizon4_rt.recipe as _recipe
+import examples.run_config as _run_config
 
 logger = get_logger("FlexivRizon4RTMain")
+
+# Run YAMLs shipped with this example; --args.run resolves bare names here.
+RUNS_DIR = pathlib.Path(__file__).parent / "runs"
 
 
 class DryRunEnvironmentWrapper(_environment.Environment):
@@ -58,9 +71,9 @@ class DryRunEnvironmentWrapper(_environment.Environment):
     def reset(self) -> None:
         self._episode_count += 1
         self._step_count = 0
-        logger.info(f"\n{'='*80}")
+        logger.info(f"\n{'=' * 80}")
         logger.info(f"🔄 Episode {self._episode_count} - environment reset (dry run mode)")
-        logger.info(f"{'='*80}\n")
+        logger.info(f"{'=' * 80}\n")
         self._wrapped_env.reset()
 
     @override
@@ -77,9 +90,9 @@ class DryRunEnvironmentWrapper(_environment.Environment):
 
         actions = action.get("actions")
         if actions is not None:
-            logger.info(f"\n{'─'*80}")
+            logger.info(f"\n{'─' * 80}")
             logger.info(f"🎯 Step {self._step_count} - policy output action (10D Cartesian):")
-            logger.info(f"{'─'*80}")
+            logger.info(f"{'─' * 80}")
 
             labels = [
                 "tcp.x",
@@ -96,9 +109,9 @@ class DryRunEnvironmentWrapper(_environment.Environment):
             for i, (label, value) in enumerate(zip(labels, actions)):
                 logger.info(f"  [{i:2d}] {label:12s}: {value:+.6f}")
 
-            logger.info(f"{'─'*80}")
+            logger.info(f"{'─' * 80}")
             logger.info("⚠️  DRY RUN mode: action intercepted, NOT executed on robot")
-            logger.info(f"{'─'*80}\n")
+            logger.info(f"{'─' * 80}\n")
 
     def disconnect(self) -> None:
         self._wrapped_env.disconnect()
@@ -106,29 +119,43 @@ class DryRunEnvironmentWrapper(_environment.Environment):
 
 @dataclass
 class Args:
-    """Arguments for Flexiv Rizon4 RT inference."""
+    """Arguments for Flexiv Rizon4 RT inference.
+
+    The bench comes from --args.robot-recipe. Everything else here is run
+    tuning, which the CLI owns outright: every tuning flag has a concrete
+    default, so it is always applied on top of the decoded recipe. A tuning key
+    written into a recipe — or already present in an upstream lerobot
+    teleop/record recipe — loses to the flag; the loader logs each one it
+    overrides so the swap is visible rather than silent.
+
+    Any of these can be preset in a run YAML under runs/ and selected with
+    --args.run; flags still win over the file. See examples/run_config.py.
+    """
+
+    # Which run YAML to take the settings below from. A name resolves against
+    # examples/flexiv_rizon4_rt/runs/; a path loads any YAML.
+    run: str | None = None
+
+    # Which physical bench to drive. A name resolves against
+    # examples/flexiv_rizon4_rt/recipes/; a path loads any recipe YAML. The
+    # recipe carries the arm SN, start pose, cameras and the typed gripper
+    # block. Required (here or in the run YAML): connecting to the wrong bench
+    # is not a safe default.
+    robot_recipe: str | None = None
 
     # Policy server connection
     host: str = "localhost"
     port: int = 8000
 
-    # Robot configuration
-    robot_sn: str = "Rizon4-063423"
-    use_gripper: bool = True
+    # Robot run tuning
     use_force: bool = False
     go_to_start: bool = False
     log_level: str = "INFO"
 
-    # Gripper settings
-    gripper_type: str = "flare_gripper"
-    gripper_mac_addr: str = "e2b26adbb104"
-    gripper_cam_size: tuple[int, int] = (640, 480)
-    gripper_rectify_size: tuple[int, int] = (400, 700)
-    gripper_max_pos: float = 85.0
-
     # RT-specific settings
     stiffness_ratio: float = 0.2
-    start_position_degree: list[float] = field(default_factory=lambda: [-1.70, 4.48, 1.54, 136.22, 0.12, 41.74, -0.18])
+    # None = use the recipe's start_position_degree.
+    start_position_degree: list[float] | None = None
     zero_ft_sensor_on_connect: bool = True
     # inner_control_hz: how often the C++ RT callback (1 kHz) consumes a new
     #   Python command. Range [1, 1000]. Default=1000 (every 1 ms cycle).
@@ -160,6 +187,34 @@ class Args:
 
 
 def main(args: Args) -> None:
+    logger.info(_run_config.describe(args, Args, RUNS_DIR))
+    if args.robot_recipe is None:
+        raise SystemExit(
+            "No bench selected. Pass --args.robot-recipe <name>, or --args.run <name> "
+            f"for a run file that sets it. Recipes: {', '.join(_recipe.available_recipes())}."
+        )
+
+    # Build the robot config before connecting: WebsocketClientPolicy blocks
+    # until the policy server answers, and neither a typo'd recipe name nor a
+    # bad key inside one should cost that wait. Decoding here also means the
+    # path logged is provably the file the arm is configured from.
+    recipe_path = _recipe.resolve_recipe_path(args.robot_recipe)
+    robot_config = _recipe.load_robot_config(
+        recipe_path,
+        use_force=args.use_force,
+        go_to_start=args.go_to_start,
+        log_level=args.log_level,
+        stiffness_ratio=args.stiffness_ratio,
+        start_position_degree=args.start_position_degree,
+        zero_ft_sensor_on_connect=args.zero_ft_sensor_on_connect,
+        inner_control_hz=args.inner_control_hz,
+        interpolate_cmds=args.interpolate_cmds,
+    )
+    logger.info(
+        f"Robot recipe: {recipe_path} (sn={robot_config.robot_sn}, "
+        f"gripper={robot_config.gripper.type if robot_config.gripper else None})"
+    )
+
     ws_client_policy = _websocket_client_policy.WebsocketClientPolicy(
         host=args.host,
         port=args.port,
@@ -169,24 +224,10 @@ def main(args: Args) -> None:
     logger.info(f"Server metadata: {metadata}")
 
     base_environment = _env.FlexivRizon4RTEnvironment(
-        robot_sn=args.robot_sn,
-        use_gripper=args.use_gripper,
-        use_force=args.use_force,
-        go_to_start=args.go_to_start,
-        log_level=args.log_level,
+        robot_config=robot_config,
         render_height=args.render_height,
         render_width=args.render_width,
         setup_robot=True,
-        gripper_type=args.gripper_type,
-        gripper_mac_addr=args.gripper_mac_addr,
-        gripper_cam_size=args.gripper_cam_size,
-        gripper_rectify_size=args.gripper_rectify_size,
-        gripper_max_pos=args.gripper_max_pos,
-        stiffness_ratio=args.stiffness_ratio,
-        start_position_degree=args.start_position_degree,
-        zero_ft_sensor_on_connect=args.zero_ft_sensor_on_connect,
-        inner_control_hz=args.inner_control_hz,
-        interpolate_cmds=args.interpolate_cmds,
     )
 
     if args.dry_run:
@@ -250,7 +291,7 @@ def main(args: Args) -> None:
                 else:
                     logger.info("Robot not connected, no need to disconnect")
         except Exception as e:
-            logger.warning(f"Error disconnecting robot: {e}")
+            logger.warn(f"Error disconnecting robot: {e}")
 
     def signal_handler(sig, frame):
         logger.info("\n⚠️ Detected user interrupt (Ctrl+C)")
@@ -274,4 +315,4 @@ def main(args: Args) -> None:
 
 
 if __name__ == "__main__":
-    tyro.cli(main)
+    main(_run_config.cli(main, Args, RUNS_DIR))

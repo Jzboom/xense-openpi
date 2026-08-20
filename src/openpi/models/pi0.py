@@ -1,11 +1,11 @@
 import logging
+from typing import Unpack, override
 
 import einops
 import flax.nnx as nnx
 import flax.nnx.bridge as nnx_bridge
 import jax
 import jax.numpy as jnp
-from typing_extensions import Unpack, override
 
 from openpi.models import model as _model
 from openpi.models import pi0_config
@@ -257,7 +257,7 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
         attn_mask = make_attn_mask(input_mask, ar_mask)
         positions = jnp.cumsum(input_mask, axis=1) - 1
-        (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+        (_, suffix_out), _ = self.PaliGemma.llm(
             [prefix_tokens, suffix_tokens],
             mask=attn_mask,
             positions=positions,
@@ -301,7 +301,7 @@ class Pi0(_model.BaseModel):
         ar_mask = jnp.concatenate([prefix_ar_mask, suffix_ar_mask], axis=0)
         attn_mask = make_attn_mask(input_mask, ar_mask)
         positions = jnp.cumsum(input_mask, axis=1) - 1
-        (prefix_out, suffix_out), _ = self.PaliGemma.llm(
+        (_, suffix_out), _ = self.PaliGemma.llm(
             [prefix_tokens, suffix_tokens],
             mask=attn_mask,
             positions=positions,
@@ -378,7 +378,7 @@ class Pi0(_model.BaseModel):
             return x_t + dt * v_t, time + dt
 
         def cond(carry):
-            x_t, time = carry
+            _, time = carry
             # robust to floating-point error
             return time >= -dt / 2
 
@@ -528,7 +528,7 @@ class Pi0(_model.BaseModel):
             return x_t, time + dt
 
         def cond(carry):
-            x_t, time = carry
+            _, time = carry
             # robust to floating-point error
             return time >= -dt / 2
 

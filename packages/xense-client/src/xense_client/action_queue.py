@@ -1,9 +1,7 @@
 from threading import Lock
-from typing import Optional
-
-import numpy as np
 
 from lerobot.utils.robot_utils import get_logger
+import numpy as np
 
 logger = get_logger("ActionQueue")
 
@@ -28,14 +26,14 @@ class ActionQueue:
             blend_steps: Number of steps to blend between old and new actions at merge.
                         0 = no blending (hard switch), >0 = linear blend over N steps.
         """
-        self.queue: Optional[np.ndarray] = None  # Processed actions for robot rollout
-        self.original_queue: Optional[np.ndarray] = None  # Original actions for RTC
+        self.queue: np.ndarray | None = None  # Processed actions for robot rollout
+        self.original_queue: np.ndarray | None = None  # Original actions for RTC
         self.lock = Lock()
         self.last_index = 0
         self.rtc_enabled = rtc_enabled
         self.blend_steps = blend_steps
 
-    def get(self) -> Optional[np.ndarray]:
+    def get(self) -> np.ndarray | None:
         """Get the next action from the queue.
 
         Returns:
@@ -44,7 +42,7 @@ class ActionQueue:
         """
         with self.lock:
             if self.queue is None or self.last_index >= len(self.queue):
-                logger.warn(
+                logger.warning(
                     "Action queue exhausted! No actions available. "
                     "This may cause robot to stall. Consider increasing execution_horizon "
                     "or reducing action_queue_size_to_get_new_actions."
@@ -97,7 +95,7 @@ class ActionQueue:
             self.original_queue = None
             self.last_index = 0
 
-    def get_left_over(self, fixed_length: int = 0) -> Optional[np.ndarray]:
+    def get_left_over(self, fixed_length: int = 0) -> np.ndarray | None:
         """Get leftover original actions for RTC prev_chunk_left_over.
 
         These are the unconsumed actions from the current chunk, which will be
@@ -138,20 +136,19 @@ class ActionQueue:
                 # as the frozen prefix, so truncating from the tail would
                 # break prefix alignment.
                 return left_over[:fixed_length]
-            else:
-                # Pad at the tail: repeat the last action to fill. The
-                # padded region is beyond the prefix window and is ignored
-                # by the model's prefix mask.
-                pad_count = fixed_length - len(left_over)
-                padding = np.repeat(left_over[-1:], pad_count, axis=0)
-                return np.concatenate([left_over, padding], axis=0)
+            # Pad at the tail: repeat the last action to fill. The
+            # padded region is beyond the prefix window and is ignored
+            # by the model's prefix mask.
+            pad_count = fixed_length - len(left_over)
+            padding = np.repeat(left_over[-1:], pad_count, axis=0)
+            return np.concatenate([left_over, padding], axis=0)
 
     def merge(
         self,
         new_original_actions: np.ndarray,
         new_processed_actions: np.ndarray,
         estimated_delay: int,
-        action_index_before_inference: Optional[int] = 0,
+        action_index_before_inference: int | None = 0,
     ):
         """Merge new actions into the queue.
 
@@ -186,7 +183,7 @@ class ActionQueue:
 
         # Log outside lock to avoid blocking get() calls
         if real_delay is not None:
-            logger.info(f"RTC: Truncate at {truncate_delay}, " f"estimated={estimated_delay}, real={real_delay}")
+            logger.info(f"RTC: Truncate at {truncate_delay}, estimated={estimated_delay}, real={real_delay}")
 
     def _replace_actions_queue(
         self,

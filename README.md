@@ -1,14 +1,14 @@
 # openpi - Xense Robotics Fork
 
-> **Note:** This is a fork of [Physical Intelligence's openpi repository](https://github.com/Physical-Intelligence/openpi), adapted and extended for **Xense Robotics platforms** (BiARX5 and Xense Flare dual-arm robots).
+> **Note:** This is a fork of [Physical Intelligence's openpi repository](https://github.com/Physical-Intelligence/openpi), adapted and extended for **Xense Robotics platforms** (BiARX5, BiFlexiv and XTac-UMI dual-arm robots).
 
 ## 🎯 Our Contributions
 
 This fork focuses on adapting OpenPI models to Xense Robotics platforms with the following key contributions:
 
-- **Xense Platform Support**: Complete integration for BiARX5 and Xense Flare dual-arm robot platforms
+- **Xense Platform Support**: Complete integration for BiARX5, BiFlexiv and XTac-UMI dual-arm robot platforms
 - **Custom Training Configurations**: Fine-tuned configs for various manipulation tasks (tie shoes, pick-and-place, open lock, wipe vase, etc.)
-- **Platform-Specific Policies**: `xense_flare_policy.py` and optimized data processing pipelines for Xense robots
+- **Platform-Specific Policies**: `bi_flexiv_policy.py`, `xtac_umi_policy.py` and optimized data processing pipelines for Xense robots
 - **Real-World Deployment**: Production-ready inference and training commands for Xense platforms
 - **Streamlined Codebase**: Removed ALOHA and LIBERO dependencies to focus on DROID and Xense platforms
 
@@ -50,7 +50,7 @@ We build on the `lerobot-xense` mamba environment, then install the client packa
 
 ```bash
 # Clone with submodules
-git clone git@github.com:Vertax42/xense-openpi.git openpi
+git clone git@github.com:XenseRobotics-AI/xense-openpi.git openpi
 cd openpi
 
 # Activate the base environment
@@ -138,23 +138,20 @@ For training, we use the LeRobot dataset format. You can convert your own data t
 
 ### 2. Defining training configs and running training
 
-A training config can be defined in **two ways**, both resolved by name through `get_config(name)`:
+A training config is **one YAML file per task**, resolved by name through
+`get_config(name)`. Per-user configs in `configs/<name>.yaml` are gitignored;
+shared templates live in `configs/_examples/<name>.yaml`. See
+[`configs/README.md`](configs/README.md) for the schema and
+[`docs/yaml_config_changelog.md`](docs/yaml_config_changelog.md) for design notes.
 
-1. **YAML (preferred for new tasks)** — one file per task in `configs/`. Per-user
-   configs in `configs/<name>.yaml` are gitignored; shared templates live in
-   `configs/_examples/<name>.yaml`. See [`configs/README.md`](configs/README.md) for
-   the schema and [`docs/yaml_config_changelog.md`](docs/yaml_config_changelog.md)
-   for design notes.
-2. **Python `_CONFIGS` list in [`config.py`](src/openpi/training/config.py)** —
-   used by legacy entries that can't round-trip through YAML (`pi0_droid`, LoRA
-   configs with `flax.nnx` freeze filters, etc.). New tasks should prefer YAML to
-   avoid merge conflicts in this central file.
+Lookup order: `configs/<name>.yaml` → `configs/_examples/<name>.yaml` →
+generated configs. First match wins. The only configs still built in Python are
+the RoboArena baselines (`paligemma_*_droid`), which pass tokenizer classes and
+lambdas that can't be serialized; see `config._generated_configs`.
 
-Lookup order: `configs/<name>.yaml` → `configs/_examples/<name>.yaml` → `_CONFIGS_DICT[name]`. First match wins.
+Building blocks:
 
-Shared building blocks (used by both modes):
-
-- Data transforms: Define the data mapping from your environment to the model (see [`droid_policy.py`](src/openpi/policies/droid_policy.py) or [`xense_flare_policy.py`](src/openpi/policies/xense_flare_policy.py) for examples)
+- Data transforms: Define the data mapping from your environment to the model (see [`droid_policy.py`](src/openpi/policies/droid_policy.py) or [`xtac_umi_policy.py`](src/openpi/policies/xtac_umi_policy.py) for examples)
 - `DataConfig`: Defines how to process raw data from LeRobot dataset for training
 - `TrainConfig`: Defines fine-tuning hyperparameters, data config, and weight loader
 
@@ -226,14 +223,18 @@ If you need to add a brand-new model class or data factory, register its string
 name in [`src/openpi/training/registry.py`](src/openpi/training/registry.py)
 first — then any YAML can reference it via `type: <YourClass>`.
 
-#### Updating shared examples after editing `config.py`
-
-If you changed something in `_CONFIGS` that has a corresponding YAML in
-`configs/_examples/`, regenerate the YAMLs and re-run the equivalence test:
+#### Checking a config you just wrote
 
 ```bash
-python scripts/migrate_configs_to_yaml.py --overwrite
-pytest src/openpi/training/yaml_examples_equivalence_test.py
+pytest src/openpi/training/config_yaml_test.py   # parses, and carries no machine-local paths
+python scripts/train.py --help                   # your config name should appear in the list
+```
+
+To turn a config that only exists in Python (a RoboArena baseline, or one you
+assembled in a REPL) into a YAML file:
+
+```bash
+python scripts/dump_config_to_yaml.py <name> --output-dir configs
 ```
 
 #### Running training
@@ -241,13 +242,13 @@ pytest src/openpi/training/yaml_examples_equivalence_test.py
 Before we can run training, we need to compute the normalization statistics for the training data. Run the script below with the name of your training config (e.g., for Xense):
 
 ```bash
-python scripts/compute_norm_stats.py --config-name pi05_base_arx5_lora
+python scripts/compute_norm_stats.py --config-name pi05_base_xtac_umi_pick_up_cube_0807_h200
 ```
 
 Now we can kick off training with the following command (the `--overwrite` flag is used to overwrite existing checkpoints if you rerun fine-tuning with the same config):
 
 ```bash
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 python scripts/train.py pi05_base_arx5_lora --exp-name=my_experiment --overwrite
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 python scripts/train.py pi05_base_xtac_umi_pick_up_cube_0807_h200 --exp-name=my_experiment --overwrite
 ```
 
 The command will log training progress to the console and save checkpoints to the `checkpoints` directory. You can also monitor training progress on the Weights & Biases dashboard. For maximally using the GPU memory, set `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9` before running training -- this enables JAX to use up to 90% of the GPU memory (vs. the default of 75%).
@@ -259,7 +260,7 @@ The command will log training progress to the console and save checkpoints to th
 Once training is complete, we can run inference by spinning up a policy server and then querying it from your robot runtime. Launching a model server is easy (we use the checkpoint for iteration 20,000 for this example, modify as needed):
 
 ```bash
-python scripts/serve_policy.py policy:checkpoint --policy.config=pi05_base_arx5_lora --policy.dir=checkpoints/pi05_base_arx5_lora/my_experiment/19999
+python scripts/serve_policy.py policy:checkpoint --policy.config=pi05_base_xtac_umi_pick_up_cube_0807_h200 --policy.dir=checkpoints/pi05_base_xtac_umi_pick_up_cube_0807_h200/my_experiment/19999
 ```
 
 This will spin up a server that listens on port 8000 and waits for observations to be sent to it. We can then run an evaluation script (or robot runtime) that queries the server.
@@ -412,7 +413,6 @@ This section contains production-ready commands for training and deploying model
 ### Platform Overview
 
 - **BiARX5**: Bi-manual ARX-5 robot setup with parallel grippers
-- **Xense Flare**: UMI-style dual-arm robot with data collection grippers
 - **BiFlexiv**: Dual-arm Flexiv Rizon4 real-time setup
 
 ### Environment Variables (optional, for multi-GPU / offline datasets)
@@ -442,11 +442,6 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 python scripts/train.py \
 #### BiFlexiv — assemble box with phone stand
 
 ```bash
-python scripts/compute_norm_stats.py --config-name pi05_base_bi_flexiv_assemble_box_with_phone_stand_lora_0403
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 python scripts/train.py \
-    pi05_base_bi_flexiv_assemble_box_with_phone_stand_lora_0403 \
-    --exp-name=bi_flexiv_assemble_box_with_phone_stand_lora_20260403 --overwrite
-
 python scripts/compute_norm_stats.py --config-name pi05_base_bi_flexiv_assemble_box_with_phone_stand_lora_0422_merged_fixed_h100
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 python scripts/train.py \
     pi05_base_bi_flexiv_assemble_box_with_phone_stand_lora_0422_merged_fixed_h100 \
@@ -462,15 +457,6 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 python scripts/train.py \
     --exp-name=pi05_base_bi_flexiv_assemble_box_with_phone_stand_lora_0430_merged_fixed_h100_0510 --overwrite
 ```
 
-#### BiFlexiv — earbuds case sequential insertion task
-
-```bash
-python scripts/compute_norm_stats.py --config-name pi05_base_bi_flexiv_earbuds_case_sequential_insertion_teleop_rtc_0513_h100
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 python scripts/train.py \
-    pi05_base_bi_flexiv_earbuds_case_sequential_insertion_teleop_rtc_0513_h100 \
-    --exp-name=pi05_base_bi_flexiv_earbuds_case_sequential_insertion_teleop_rtc_0513_h100_0513 --overwrite
-```
-
 #### BiFlexiv - shoe_insole_retrieval_and_packing_0
 
 ```bash
@@ -483,20 +469,15 @@ python scripts/compute_norm_stats.py --config-name pi05_base_bi_flexiv_shoe_inso
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 python scripts/train.py \
     pi05_base_bi_flexiv_shoe_insole_retrieval_and_packing_0515_h100 \
     --exp-name=pi05_base_bi_flexiv_shoe_insole_retrieval_and_packing_0515_h100_0519 --overwrite
-
-python scripts/compute_norm_stats.py --config-name pi05_base_bi_flexiv_shoe_insole_retrieval_and_packing_0607_h100
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 python scripts/train.py \
-    pi05_base_bi_flexiv_shoe_insole_retrieval_and_packing_0607_h100 \
-    --exp-name=pi05_base_bi_flexiv_shoe_insole_retrieval_and_packing_0607_h100_0607 --overwrite
 ```
 
 #### BiFlexiv - shoe_insole_retrieval_and_packing_1
 
 ```bash
-python scripts/compute_norm_stats.py --config-name pi05_base_bi_flexiv_newbalacne_shoe_insole_retrieval_and_packing_0616_h100
+python scripts/compute_norm_stats.py --config-name pi05_base_bi_flexiv_newbalance_shoe_insole_retrieval_and_packing_0616_h100
 XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 python scripts/train.py \
-    pi05_base_bi_flexiv_newbalacne_shoe_insole_retrieval_and_packing_0616_h100 \
-    --exp-name=pi05_base_bi_flexiv_newbalacne_shoe_insole_retrieval_and_packing_0616_h100_0626 --overwrite
+    pi05_base_bi_flexiv_newbalance_shoe_insole_retrieval_and_packing_0616_h100 \
+    --exp-name=pi05_base_bi_flexiv_newbalance_shoe_insole_retrieval_and_packing_0616_h100_0626 --overwrite
 ```
 
 #### BiFlexiv - bag_inspection_0611
@@ -510,35 +491,9 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 python scripts/train.py \
 
 ### Deployment Commands (latest per platform)
 
-#### BiARX5 — training-time RTC inference
-
-```bash
-python scripts/serve_policy.py \
-    --default-prompt="pick rgb cubes and place them into the blue box" \
-    policy:checkpoint \
-    --policy.config=pi05_base_arx5_lora_training_time_rtc \
-    --policy.dir=checkpoints/pi05_base_arx5_lora_training_time_rtc/training_time_rtc_20251209/39999
-```
-
-#### Xense Flare — open lock inference
-
-```bash
-python scripts/serve_policy.py \
-    --default-prompt="open the lock with the key" \
-    policy:checkpoint \
-    --policy.config=pi05_base_xense_flare_open_lock_rtc_0228 \
-    --policy.dir=checkpoints/pi05_base_xense_flare_open_lock_rtc_0228/xense_flare_open_lock_rtc_0228/19999
-```
-
 #### BiFlexiv — assemble box inference
 
 ```bash
-python scripts/serve_policy.py \
-    --default-prompt="assemble the box with the phone stand" \
-    policy:checkpoint \
-    --policy.config=pi05_base_bi_flexiv_assemble_box_with_phone_stand_lora_0410_merged_fixed \
-    --policy.dir=checkpoints/pi05_base_bi_flexiv_assemble_box_with_phone_stand_lora_0410_merged_fixed/bi_flexiv_assemble_box_with_phone_stand_lora_0410_merged_fixed_20260413/79999
-
 python scripts/serve_policy.py \
     --default-prompt="assemble the box with the phone stand" \
     policy:checkpoint \
@@ -556,16 +511,6 @@ python scripts/serve_policy.py \
     policy:checkpoint \
     --policy.config=pi05_base_bi_flexiv_assemble_box_with_phone_stand_lora_0430_merged_fixed_h100 \
     --policy.dir=checkpoints/pi05_base_bi_flexiv_assemble_box_with_phone_stand_lora_0430_merged_fixed_h100/pi05_base_bi_flexiv_assemble_box_with_phone_stand_lora_0430_merged_fixed_h100_0510/66000
-```
-
-#### BiFlexiv — earbuds case assembly with lid operation inference
-
-```bash
-python scripts/serve_policy.py \
-    --default-prompt="Pick up the earbuds from the acrylic plate, open the charging case, precisely align and gently insert the earbuds using contact feedback, then close the lid securely" \
-    policy:checkpoint \
-    --policy.config=pi05_base_bi_flexiv_earbuds_case_sequential_insertion_teleop_rtc_0513_h100 \
-    --policy.dir=checkpoints/pi05_base_bi_flexiv_earbuds_case_sequential_insertion_teleop_rtc_0513_h100/pi05_base_bi_flexiv_earbuds_case_sequential_insertion_teleop_rtc_0513_h100_0513/19999
 ```
 
 #### BiFlexiv - shoe_insole_retrieval_and_packing_0 inference
@@ -608,25 +553,45 @@ python scripts/serve_policy.py \
 
 ### Running the robot client
 
-```bash
-# BiARX5 with tactile sensors
-python -m examples.bi_arx5_real.main \
-    --args.host 192.168.2.215 \
-    --args.port 8000 \
-    --args.dry_run \
-    --args.enable_tactile_sensors
+A launch is described by two YAML files, so the command line stays short:
 
-# BiFlexiv RT side mount with RTC enabled
+- **Recipe** — the bench: arm SNs, start/home poses, cameras, gripper block.
+  `examples/<example>/recipes/`, selected with `--args.robot-recipe`.
+- **Run** — everything else: policy server, RTC, recording, obs streaming,
+  control-loop tuning. `examples/<example>/runs/`, selected with `--args.run`.
+
+```bash
+# One line: the run file names the bench and presets every flag.
+python -m examples.bi_flexiv_rizon4_rt.main --args.run dewu-shoe-insole
+
+# Any flag still overrides the file, for a one-off.
+python -m examples.bi_flexiv_rizon4_rt.main --args.run dewu-shoe-insole --args.dry-run
+
+# BiARX5 with tactile sensors.
+python -m examples.bi_arx5_real.main --args.run tactile --args.host 192.168.2.215
+```
+
+Precedence is `dataclass defaults < run YAML < CLI flags`, and `--help` shows the
+values actually in effect once a run file is applied. Every flag still works on
+its own, exactly as before — a run file is optional:
+
+```bash
+# BiFlexiv RT with RTC enabled, all on the CLI. --args.robot-recipe names the
+# physical bench; it replaced --args.bi-mount-type, which indexed a stations/
+# table lerobot removed.
 python -m examples.bi_flexiv_rizon4_rt.main \
+    --args.robot-recipe forward-04 \
     --args.host 192.168.142.158 \
     --args.port 8000 \
-    --args.bi-mount-type side \
     --args.inner-control-hz 1000 \
     --args.interpolate-cmds \
     --args.runtime-hz 30 \
     --args.rtc-enabled \
     --args.dry-run
 ```
+
+See [`examples/bi_flexiv_rizon4_rt/runs/README.md`](examples/bi_flexiv_rizon4_rt/runs/README.md)
+for how to write one.
 
 ### BiFlexiv RT forward mount + dewu video switch — full 3-machine demo
 
@@ -668,22 +633,24 @@ python -m examples.dewu_video_switch.app \
 # --args.subscribe / --args.subscribe-url wire the robot's head camera + state to
 # the screen PC (②) so the on-screen scene video switches with the real inspection.
 # (Note: --args.subscribe is the detection-data stream — unrelated to the
-# --args.bi-mount-type forward-05 arm-mount option below.)
+# --args.robot-recipe bench selection below.)
 # --args.subscribe BLOCKS at startup until ② is reachable (handshake, like the
 # VLA client waits for the inference server), so start ② before this. Add
 # --args.subscribe-handshake-timeout <s> to abort instead of waiting forever.
-python -m examples.bi_flexiv_rizon4_rt.main \
- --args.host 192.168.5.87 \
- --args.port 8000 \
- --args.bi-mount-type forward-05 \
- --args.inner-control-hz 1000 \
- --args.interpolate-cmds \
- --args.runtime-hz 30 \
- --args.rtc-enabled \
- --args.subscribe \
- --args.subscribe-url ws://<screen-pc-ip>:9100 \
- --args.subscribe-hz 10 \
- --args.dry-run
+#
+# All of that is preset in examples/bi_flexiv_rizon4_rt/runs/dewu-shoe-insole.yaml;
+# edit the host and subscribe-url in that file to match your two machines.
+python -m examples.bi_flexiv_rizon4_rt.main --args.run dewu-shoe-insole
+
+# First time on a new bench, look before you leap:
+python -m examples.bi_flexiv_rizon4_rt.main --args.run dewu-shoe-insole --args.dry-run
+```
+
+Keep a log of a run you intend to debug afterwards:
+
+```bash
+python -m examples.bi_flexiv_rizon4_rt.main --args.run dewu-shoe-insole \
+    2>&1 | tee ~/rt_diag_$(date +%F_%H%M).log
 ```
 
 ---

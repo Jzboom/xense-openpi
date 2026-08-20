@@ -29,7 +29,6 @@ Trade-offs / non-goals:
 
 import threading
 import time
-from typing import Optional
 
 from xense_client.logger import get_logger
 from xense_client.paced_broker import PacedBroker
@@ -85,7 +84,7 @@ class DecoupledRuntime:
 
         # Latest obs snapshot — written by obs thread, read by action thread
         # for subscriber pairing. Single-slot, last-writer-wins.
-        self._latest_obs: Optional[dict] = None
+        self._latest_obs: dict | None = None
         self._obs_lock = threading.Lock()
         self._stop_event = threading.Event()
 
@@ -232,7 +231,7 @@ class DecoupledRuntime:
                     try:
                         subscriber.on_step(obs_snapshot, action)
                     except Exception as e:
-                        logger.warn(f"subscriber.on_step raised: {e}")
+                        logger.warning(f"subscriber.on_step raised: {e}")
 
             self._action_steps += 1
             if self._max_episode_steps > 0 and self._action_steps >= self._max_episode_steps:
@@ -253,7 +252,7 @@ class DecoupledRuntime:
                 # don't try to burst-catch-up forever after a stall.
                 if self._action_steps % 60 == 0:
                     logger.debug(
-                        f"action loop behind by {-sleep_for*1000:.1f} ms "
-                        f"(send_action={((time.time()-t_send_start)*1000):.1f} ms)"
+                        f"action loop behind by {-sleep_for * 1000:.1f} ms "
+                        f"(send_action={((time.time() - t_send_start) * 1000):.1f} ms)"
                     )
                 next_tick = now
