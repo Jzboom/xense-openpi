@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import override
 
+from lerobot.robots.bi_flexiv_rizon4_rt.config_bi_flexiv_rizon4_rt import BiFlexivRizon4RTConfig
 from lerobot.utils.robot_utils import get_logger
 import numpy as np
 from xense_client.runtime import environment as _environment
@@ -47,26 +48,13 @@ class DreamTacBiFlexivEnvironment(_environment.Environment):
     def __init__(
         self,
         *,
-        bi_mount_type: str = "side",
-        use_force: bool = False,
-        go_to_start: bool = True,
-        stiffness_ratio: float = 0.2,
-        inner_control_hz: int = 1000,
-        interpolate_cmds: bool = True,
-        log_level: str = "INFO",
+        robot_config: BiFlexivRizon4RTConfig,
         image_size: int = DEFAULT_IMAGE_SIZE,
         include_raw_images: bool = False,
         setup_robot: bool = True,
     ) -> None:
         self._env = DreamTacBiFlexivRealEnv(
-            bi_mount_type=bi_mount_type,
-            use_force=use_force,
-            go_to_start=go_to_start,
-            stiffness_ratio=stiffness_ratio,
-            inner_control_hz=inner_control_hz,
-            interpolate_cmds=interpolate_cmds,
-            enable_tactile_sensors=True,
-            log_level=log_level,
+            robot_config=robot_config,
             setup_robot=setup_robot,
         )
         self._image_size = image_size

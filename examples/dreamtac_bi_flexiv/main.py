@@ -5,13 +5,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import pathlib
 import signal
 import threading
 from typing import override
 
 from lerobot.utils.robot_utils import get_logger
 import numpy as np
-import tyro
 from xense_client import action_chunk_broker
 from xense_client import paced_broker
 from xense_client import websocket_client_policy
@@ -20,13 +20,19 @@ from xense_client.runtime import environment as _environment
 from xense_client.runtime import runtime as synchronous_runtime
 from xense_client.runtime.agents import policy_agent
 
+import examples.bi_flexiv_rizon4_rt.recipe as _recipe
 from examples.dreamtac_bi_flexiv.env import DreamTacBiFlexivEnvironment
 from examples.dreamtac_bi_flexiv.observation import ACTION_DIM
 from examples.dreamtac_bi_flexiv.observation import ACTION_HORIZON
 from examples.dreamtac_bi_flexiv.policy_adapter import DreamTacRemotePolicy
 from examples.dreamtac_bi_flexiv.policy_adapter import validate_server_metadata
+from examples.dreamtac_bi_flexiv.robot_config import validate_dreamtac_robot_config
+import examples.run_config as _run_config
 
 logger = get_logger("DreamTacBiFlexivMain")
+
+# Run YAMLs shipped with this example; --args.run resolves bare names here.
+RUNS_DIR = pathlib.Path(__file__).parent / "runs"
 
 
 class DryRunEnvironment(_environment.Environment):
@@ -69,14 +75,22 @@ class DryRunEnvironment(_environment.Environment):
 class Args:
     """Dream-Tac BiFlexiv robot-client settings."""
 
+    # Optional run YAML under runs/. CLI flags override values from the file.
+    run: str | None = None
+
+    # Physical bench. A bare name resolves against the BiFlexiv recipes in this
+    # repository; a path may point at a current lerobot-xense recipe. Required:
+    # choosing a silent default could connect to the wrong arms.
+    robot_recipe: str | None = None
+
     # Dream-Tac server.
     host: str = "localhost"
     port: int = 8000
     prompt: str | None = None
 
-    # Robot configuration. Tactile sensors are always enabled for Dream-Tac.
-    bi_mount_type: str = "side"
-    use_force: bool = False
+    # Robot run tuning. Bench hardware and tactile-camera wiring live in the
+    # recipe. Force control is pinned off because Dream-Tac emits 20D actions
+    # without wrench targets.
     go_to_start: bool = True
     stiffness_ratio: float = 0.2
     inner_control_hz: int = 1000
@@ -98,10 +112,37 @@ class Args:
 
 
 def main(args: Args) -> None:
+    logger.info(_run_config.describe(args, Args, RUNS_DIR))
+    if args.robot_recipe is None:
+        raise SystemExit(
+            "No bench selected. Pass --args.robot-recipe <name-or-path>, or use a run file that sets it. "
+            f"Bundled BiFlexiv recipes: {', '.join(_recipe.available_recipes())}."
+        )
     if args.runtime_hz <= 0:
-        raise SystemExit(f"--runtime-hz must be positive, got {args.runtime_hz}")
+        raise SystemExit(f"--args.runtime-hz must be positive, got {args.runtime_hz}")
     if args.action_hz < 0:
-        raise SystemExit(f"--action-hz must be non-negative, got {args.action_hz}")
+        raise SystemExit(f"--args.action-hz must be non-negative, got {args.action_hz}")
+
+    # Decode and validate the bench before waiting for the policy server or
+    # touching hardware. Current lerobot-xense no longer has bi_mount_type or a
+    # top-level enable_tactile_sensors field; all bench hardware comes from the
+    # recipe and tactile discovery belongs to its typed gripper block.
+    recipe_path = _recipe.resolve_recipe_path(args.robot_recipe)
+    robot_config = _recipe.load_robot_config(
+        recipe_path,
+        use_force=False,
+        go_to_start=args.go_to_start,
+        stiffness_ratio=args.stiffness_ratio,
+        inner_control_hz=args.inner_control_hz,
+        interpolate_cmds=args.interpolate_cmds,
+        log_level=args.log_level,
+    )
+    validate_dreamtac_robot_config(robot_config)
+    logger.info(
+        f"Robot recipe: {recipe_path} "
+        f"(left={robot_config.left_robot_sn}, right={robot_config.right_robot_sn}, "
+        f"gripper={robot_config.gripper.type})"
+    )
 
     websocket_policy = websocket_client_policy.WebsocketClientPolicy(host=args.host, port=args.port)
     metadata = websocket_policy.get_server_metadata()
@@ -115,19 +156,13 @@ def main(args: Args) -> None:
     )
 
     base_environment = DreamTacBiFlexivEnvironment(
-        bi_mount_type=args.bi_mount_type,
-        use_force=args.use_force,
-        go_to_start=args.go_to_start,
-        stiffness_ratio=args.stiffness_ratio,
-        inner_control_hz=args.inner_control_hz,
-        interpolate_cmds=args.interpolate_cmds,
-        log_level=args.log_level,
+        robot_config=robot_config,
         include_raw_images=args.include_raw_images,
         setup_robot=True,
     )
     environment: _environment.Environment
     if args.dry_run:
-        logger.warning("DRY RUN enabled: robot connects and resets, but inferred actions are not sent")
+        logger.warn("DRY RUN enabled: robot connects and resets, but inferred actions are not sent")
         environment = DryRunEnvironment(base_environment)
     else:
         environment = base_environment
@@ -161,7 +196,7 @@ def main(args: Args) -> None:
 
     def signal_handler(_sig, _frame) -> None:
         if shutdown_started.is_set():
-            logger.warning("Second Ctrl+C: forcing exit; robot may not return home cleanly")
+            logger.warn("Second Ctrl+C: forcing exit; robot may not return home cleanly")
             os._exit(1)
         shutdown_started.set()
         logger.info("Ctrl+C: stopping runtime gracefully")
@@ -177,8 +212,8 @@ def main(args: Args) -> None:
         try:
             environment.disconnect()
         except Exception as exc:
-            logger.warning(f"Error disconnecting Dream-Tac robot environment: {exc}")
+            logger.warn(f"Error disconnecting Dream-Tac robot environment: {exc}")
 
 
 if __name__ == "__main__":
-    tyro.cli(main)
+    main(_run_config.cli(main, Args, RUNS_DIR))

@@ -1,0 +1,8 @@
+# Network + policy actions are exercised, but inferred actions are not sent.
+# This still connects and moves the arms during reset/home. The bench recipe is
+# deliberately required on the command line.
+runtime_hz: 30.0
+action_hz: 0.0
+dry_run: true
+num_episodes: 1
+max_episode_steps: 20
