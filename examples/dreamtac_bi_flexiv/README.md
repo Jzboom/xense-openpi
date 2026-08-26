@@ -154,11 +154,12 @@ server metadata, start a real synchronous run:
 
 ```bash
 python -m examples.dreamtac_bi_flexiv.main \
-  --args.robot-recipe /path/to/lerobot-xense/recipes/teleop/bi_flexiv_rizon4_rt/forward-05-xgripper.yaml \
-  --args.host 192.168.2.100 \
+  --args.robot-recipe /home/xense-sn0/lerobot-xense/recipes/teleop/bi_flexiv_rizon4_rt/forward-04-xgripper.yaml \
+  --args.host 192.168.204.183 \
   --args.port 8000 \
   --args.runtime-hz 30 \
-  --args.action-hz 0
+  --args.action-hz 30 \
+  --args.action-execution-horizon 20
 ```
 
 The server default prompt is used unless `--args.prompt` is supplied. A supplied
@@ -166,9 +167,11 @@ prompt must be an exact key in the server's T5 embedding cache unless the server
 was started with prompt fallback enabled.
 
 Dream-Tac does not support OpenPI RTC. `action_hz=0` is the recommended first
-deployment and uses synchronous 30-step chunk execution. After that path is
-validated, `--args.action-hz 30` enables the existing decoupled observation and
-action runtime; it is pacing, not RTC.
+deployment. The model and server contract remain 30 steps, while
+`--args.action-execution-horizon 20` executes only actions 0-19 from each chunk,
+discards actions 20-29, and requests a fresh 30-step prediction. After that path
+is validated, `--args.action-hz 30` enables the existing decoupled observation
+and action runtime; it is pacing, not RTC.
 
 Press Ctrl+C once for graceful shutdown and homing. A second Ctrl+C forces the
 process to exit and can leave the arms away from home.

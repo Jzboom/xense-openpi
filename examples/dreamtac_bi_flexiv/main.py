@@ -100,6 +100,7 @@ class Args:
     # Observation/action scheduling.
     runtime_hz: float = 30.0
     action_hz: float = 0.0
+    action_execution_horizon: int = 20
     paced_queue_size: int = 50
     num_episodes: int = 1
     max_episode_steps: int = 1_000_000
@@ -122,6 +123,11 @@ def main(args: Args) -> None:
         raise SystemExit(f"--args.runtime-hz must be positive, got {args.runtime_hz}")
     if args.action_hz < 0:
         raise SystemExit(f"--args.action-hz must be non-negative, got {args.action_hz}")
+    if not 1 <= args.action_execution_horizon <= ACTION_HORIZON:
+        raise SystemExit(
+            f"--args.action-execution-horizon must be in [1, {ACTION_HORIZON}], "
+            f"got {args.action_execution_horizon}"
+        )
 
     # Decode and validate the bench before waiting for the policy server or
     # touching hardware. Current lerobot-xense no longer has bi_mount_type or a
@@ -148,11 +154,15 @@ def main(args: Args) -> None:
     metadata = websocket_policy.get_server_metadata()
     validate_server_metadata(metadata)
     logger.info(f"Connected to Dream-Tac server: {metadata}")
+    logger.info(
+        f"Action chunk execution: first {args.action_execution_horizon}/{ACTION_HORIZON} actions; "
+        f"discard {ACTION_HORIZON - args.action_execution_horizon} tail actions"
+    )
 
     remote_policy = DreamTacRemotePolicy(websocket_policy, default_prompt=args.prompt)
     chunked_policy = action_chunk_broker.ActionChunkBroker(
         policy=remote_policy,
-        action_horizon=ACTION_HORIZON,
+        action_horizon=args.action_execution_horizon,
     )
 
     base_environment = DreamTacBiFlexivEnvironment(

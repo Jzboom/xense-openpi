@@ -2,7 +2,9 @@ from typing import Any
 
 import numpy as np
 import pytest
+from xense_client import action_chunk_broker
 
+from examples.dreamtac_bi_flexiv.main import Args
 from examples.dreamtac_bi_flexiv.observation import ACTION_DIM
 from examples.dreamtac_bi_flexiv.observation import ACTION_HORIZON
 from examples.dreamtac_bi_flexiv.observation import CAMERA_KEYS
@@ -81,3 +83,33 @@ def test_remote_policy_accepts_a_30_step_action_chunk() -> None:
     result = policy.infer(_observation())
 
     assert result["actions"].shape == (30, 20)
+
+
+class _CountingChunkPolicy:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def infer(self, _obs: dict) -> dict[str, np.ndarray]:
+        offset = 100 * self.calls
+        self.calls += 1
+        steps = (np.arange(ACTION_HORIZON, dtype=np.float32) + offset)[:, None]
+        return {"actions": np.repeat(steps, ACTION_DIM, axis=1)}
+
+    def reset(self) -> None:
+        pass
+
+
+def test_client_executes_20_actions_then_discards_the_10_step_tail() -> None:
+    execution_horizon = Args().action_execution_horizon
+    assert execution_horizon == 20
+
+    inner = _CountingChunkPolicy()
+    broker = action_chunk_broker.ActionChunkBroker(
+        policy=inner,
+        action_horizon=execution_horizon,
+    )
+    executed = [float(broker.infer({})["actions"][0]) for _ in range(21)]
+
+    assert executed[:20] == list(range(20))
+    assert executed[20] == 100.0
+    assert inner.calls == 2
