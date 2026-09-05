@@ -18,11 +18,15 @@ from examples.dreamtac_bi_flexiv.observation import STATE_DIM
 def validate_server_metadata(metadata: Mapping[str, Any]) -> None:
     """Fail fast when the robot connects to an incompatible inference server."""
     expected = {
-        "service": "dreamtac-earbud",
+        "service": "dreamtac-bi_flexiv",
         "state_dim": STATE_DIM,
         "action_dim": ACTION_DIM,
         "action_horizon": ACTION_HORIZON,
         "action_space": "absolute_tcp18_absolute_gripper2",
+        "normalization_mode": "q99",
+        "future_image_horizon": ACTION_HORIZON,
+        "state_t": 11,
+        "num_conditional_frames": 7,
         "rtc_supported": False,
     }
     errors = [

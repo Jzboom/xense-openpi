@@ -8,23 +8,21 @@ import math
 import cv2
 import numpy as np
 
-CAMERA_KEYS = (
+RGB_CAMERA_KEYS = (
     "head",
     "left_wrist",
     "right_wrist",
-    "left_tactile_0",
-    "left_tactile_1",
-    "right_tactile_0",
-    "right_tactile_1",
 )
-TACTILE_KEYS = CAMERA_KEYS[3:]
-LEFT_TACTILE_KEYS = ("left_tactile_0", "left_tactile_1")
-RIGHT_TACTILE_KEYS = ("right_tactile_0", "right_tactile_1")
+LEFT_TACTILE_KEYS = ("left_tactile_left", "left_tactile_right")
+RIGHT_TACTILE_KEYS = ("right_tactile_left", "right_tactile_right")
+TACTILE_KEYS = LEFT_TACTILE_KEYS + RIGHT_TACTILE_KEYS
+CAMERA_KEYS = RGB_CAMERA_KEYS + TACTILE_KEYS
 
 STATE_DIM = 20
 ACTION_DIM = 20
-ACTION_HORIZON = 20
+ACTION_HORIZON = 30
 DEFAULT_IMAGE_SIZE = 224
+TACTILE_IMAGE_SHAPE = (400, 700, 3)
 
 
 def coerce_hwc_uint8(image: object, *, name: str) -> np.ndarray:
@@ -44,7 +42,12 @@ def coerce_hwc_uint8(image: object, *, name: str) -> np.ndarray:
 def prepare_policy_images(
     images: Mapping[str, object], *, image_size: int = DEFAULT_IMAGE_SIZE
 ) -> dict[str, np.ndarray]:
-    """Validate and directly resize the seven Dream-Tac views to square HWC images."""
+    """Prepare RGB views while preserving raw tactile frames for model-side merging.
+
+    The Dream-Tac server merges each gripper's two 400x700 tactile frames
+    vertically before resizing and padding. Resizing the two sensor frames on
+    the robot computer would change that geometry and no longer match training.
+    """
     if image_size <= 0:
         raise ValueError(f"image_size must be positive, got {image_size}")
     missing = [name for name in CAMERA_KEYS if name not in images]
@@ -54,8 +57,10 @@ def prepare_policy_images(
     prepared: dict[str, np.ndarray] = {}
     for name in CAMERA_KEYS:
         image = coerce_hwc_uint8(images[name], name=name)
-        if image.shape[:2] != (image_size, image_size):
+        if name in RGB_CAMERA_KEYS and image.shape[:2] != (image_size, image_size):
             image = cv2.resize(image, (image_size, image_size), interpolation=cv2.INTER_AREA)
+        elif name in TACTILE_KEYS and image.shape != TACTILE_IMAGE_SHAPE:
+            raise ValueError(f"Tactile image {name!r} must retain raw shape {TACTILE_IMAGE_SHAPE}, got {image.shape}")
         prepared[name] = np.ascontiguousarray(image)
     return prepared
 

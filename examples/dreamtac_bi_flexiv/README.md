@@ -19,7 +19,7 @@ DreamTacBiFlexivEnvironment
 DreamTacRemotePolicy -> Dream-Tac WebSocket server
         |
         v
-(20, 20) absolute action chunk -> robot.send_action()
+(30, 20) absolute action chunk -> robot.send_action()
 ```
 
 The state/action order is:
@@ -31,6 +31,10 @@ The state/action order is:
 Dream-Tac requires exactly seven views: `head`, both wrists and two tactile
 cameras per gripper. `images_raw` is never sent to the inference server; when
 `--args.include-raw-images` is enabled it stays in the local observation.
+The three RGB views are resized to `224x224` on the robot computer. The four
+raw `400x700` tactile views are sent without resizing because the inference
+server must merge each sensor pair before applying the training-time resize
+and padding.
 
 ## Robot recipe
 
@@ -106,16 +110,16 @@ cd /path/to/Dream-Tac
 
 export DREAMTAC_CKPT=/path/to/checkpoint
 export DREAMTAC_WAN_VAE=/path/to/tokenizer.pth
-export DREAMTAC_STATS=/path/to/dataset_statistics_lerobot_earbud.json
+export DREAMTAC_STATS=/path/to/dataset_statistics_lerobot_bi_flexiv.json
 export DREAMTAC_T5=/path/to/t5_embeddings.pkl
 export DREAMTAC_DEFAULT_PROMPT='the exact prompt stored in the T5 cache'
 
-python -m cosmos_policy.experiments.robot.earbud.earbud_server \
+python -m cosmos_policy.experiments.robot.bi_flexiv.bi_flexiv_server \
   --host 0.0.0.0 \
   --port 8000 \
   --action-output absolute_from_state \
   --normalization-mode q99 \
-  --num-denoising-steps 5
+  --num-denoising-steps 10
 ```
 
 The server warms the model before opening the port. Its health endpoint is:
@@ -162,7 +166,7 @@ prompt must be an exact key in the server's T5 embedding cache unless the server
 was started with prompt fallback enabled.
 
 Dream-Tac does not support OpenPI RTC. `action_hz=0` is the recommended first
-deployment and uses synchronous 20-step chunk execution. After that path is
+deployment and uses synchronous 30-step chunk execution. After that path is
 validated, `--args.action-hz 30` enables the existing decoupled observation and
 action runtime; it is pacing, not RTC.
 
