@@ -10,6 +10,7 @@ import numpy as np
 from xense_client.runtime import environment as _environment
 
 from examples.dreamtac_bi_flexiv.observation import ACTION_DIM
+from examples.dreamtac_bi_flexiv.observation import CameraHistoryBuffer
 from examples.dreamtac_bi_flexiv.observation import DEFAULT_IMAGE_SIZE
 from examples.dreamtac_bi_flexiv.observation import TactileGateTracker
 from examples.dreamtac_bi_flexiv.observation import coerce_hwc_uint8
@@ -60,6 +61,7 @@ class DreamTacBiFlexivEnvironment(_environment.Environment):
         self._image_size = image_size
         self._include_raw_images = include_raw_images
         self._gate_tracker = TactileGateTracker()
+        self._history_buffer = CameraHistoryBuffer()
         self._observation_seq = 0
         self._action_step = 0
 
@@ -67,6 +69,7 @@ class DreamTacBiFlexivEnvironment(_environment.Environment):
     def reset(self) -> None:
         self._env.reset()
         self._gate_tracker.reset()
+        self._history_buffer.reset()
         self._observation_seq = 0
         self._action_step = 0
 
@@ -80,12 +83,13 @@ class DreamTacBiFlexivEnvironment(_environment.Environment):
         raw_images = raw_obs["images"]
         tactile_gate = self._gate_tracker.update(raw_images)
         processed_images = prepare_policy_images(raw_images, image_size=self._image_size)
+        history_images = self._history_buffer.update(processed_images)
 
         self._observation_seq += 1
         observation = {
             "observation_seq": self._observation_seq,
             "state": np.ascontiguousarray(raw_obs["qpos"], dtype=np.float32),
-            "images": processed_images,
+            "images": history_images,
             "tactile_self_attn_gate": tactile_gate,
         }
         if self._include_raw_images:

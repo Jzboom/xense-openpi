@@ -3,15 +3,17 @@ from typing import Any
 import numpy as np
 import pytest
 from xense_client import action_chunk_broker
+from xense_client import msgpack_numpy
 
 from examples.dreamtac_bi_flexiv.main import Args
 from examples.dreamtac_bi_flexiv.observation import ACTION_DIM
 from examples.dreamtac_bi_flexiv.observation import ACTION_HORIZON
-from examples.dreamtac_bi_flexiv.observation import CAMERA_KEYS
-from examples.dreamtac_bi_flexiv.observation import RGB_CAMERA_KEYS
+from examples.dreamtac_bi_flexiv.observation import FUTURE_IMAGE_OFFSETS
+from examples.dreamtac_bi_flexiv.observation import HISTORY_FRAMES
+from examples.dreamtac_bi_flexiv.observation import RGB_HISTORY_OFFSETS
 from examples.dreamtac_bi_flexiv.observation import STATE_DIM
-from examples.dreamtac_bi_flexiv.observation import TACTILE_IMAGE_SHAPE
-from examples.dreamtac_bi_flexiv.observation import TACTILE_KEYS
+from examples.dreamtac_bi_flexiv.observation import TACTILE_HISTORY_OFFSETS
+from examples.dreamtac_bi_flexiv.observation import TRANSPORT_CAMERA_KEYS
 from examples.dreamtac_bi_flexiv.policy_adapter import DreamTacRemotePolicy
 from examples.dreamtac_bi_flexiv.policy_adapter import build_policy_payload
 from examples.dreamtac_bi_flexiv.policy_adapter import validate_server_metadata
@@ -25,8 +27,14 @@ def _metadata() -> dict[str, Any]:
         "action_horizon": ACTION_HORIZON,
         "action_space": "absolute_tcp18_absolute_gripper2",
         "normalization_mode": "q99",
-        "camera_keys": CAMERA_KEYS,
-        "image_shape": (224, 224, 3),
+        "camera_keys": TRANSPORT_CAMERA_KEYS,
+        "image_shape": (HISTORY_FRAMES, 224, 224, 3),
+        "camera_history_shape": (HISTORY_FRAMES, 224, 224, 3),
+        "future_image_shape": (HISTORY_FRAMES, 224, 224, 3),
+        "history_frames": HISTORY_FRAMES,
+        "rgb_history_offsets": RGB_HISTORY_OFFSETS,
+        "tactile_history_offsets": TACTILE_HISTORY_OFFSETS,
+        "future_image_offsets": FUTURE_IMAGE_OFFSETS,
         "future_image_horizon": ACTION_HORIZON,
         "state_t": 11,
         "num_conditional_frames": 7,
@@ -35,8 +43,10 @@ def _metadata() -> dict[str, Any]:
 
 
 def _observation() -> dict[str, Any]:
-    images = {name: np.zeros((224, 224, 3), dtype=np.uint8) for name in RGB_CAMERA_KEYS}
-    images.update({name: np.zeros(TACTILE_IMAGE_SHAPE, dtype=np.uint8) for name in TACTILE_KEYS})
+    images = {
+        name: np.zeros((HISTORY_FRAMES, 224, 224, 3), dtype=np.uint8)
+        for name in TRANSPORT_CAMERA_KEYS
+    }
     return {
         "observation_seq": 3,
         "state": np.zeros((STATE_DIM,), dtype=np.float32),
@@ -47,14 +57,27 @@ def _observation() -> dict[str, Any]:
 
 
 def test_accepts_current_dreamtac_server_metadata() -> None:
-    validate_server_metadata(_metadata())
-
-
-def test_rejects_old_20_step_server() -> None:
     metadata = _metadata()
-    metadata["action_horizon"] = 20
+    # WebSocket serialization turns tuples into lists.
+    for key in (
+        "camera_keys",
+        "image_shape",
+        "camera_history_shape",
+        "future_image_shape",
+        "rgb_history_offsets",
+        "tactile_history_offsets",
+        "future_image_offsets",
+    ):
+        metadata[key] = list(metadata[key])
 
-    with pytest.raises(ValueError, match="action_horizon=20"):
+    validate_server_metadata(metadata)
+
+
+def test_rejects_old_30_step_server() -> None:
+    metadata = _metadata()
+    metadata["action_horizon"] = 30
+
+    with pytest.raises(ValueError, match="action_horizon=30"):
         validate_server_metadata(metadata)
 
 
@@ -62,9 +85,26 @@ def test_payload_keeps_only_model_inputs_and_adds_prompt() -> None:
     payload = build_policy_payload(_observation(), default_prompt="task prompt")
 
     assert set(payload) == {"state", "images", "tactile_self_attn_gate", "observation_seq", "prompt"}
-    assert tuple(payload["images"]) == CAMERA_KEYS
-    assert payload["images"]["left_tactile_left"].shape == TACTILE_IMAGE_SHAPE
+    assert tuple(payload["images"]) == TRANSPORT_CAMERA_KEYS
+    assert payload["images"]["head"].shape == (HISTORY_FRAMES, 224, 224, 3)
+    assert payload["images"]["left_tactile_merged"].shape == (HISTORY_FRAMES, 224, 224, 3)
     assert payload["prompt"] == "task prompt"
+
+
+def test_compact_payload_is_about_three_megabytes() -> None:
+    payload = build_policy_payload(_observation(), default_prompt="task prompt")
+
+    packed_size = len(msgpack_numpy.packb(payload))
+
+    assert 3_010_560 < packed_size < 3_020_000
+
+
+def test_payload_rejects_legacy_single_frames() -> None:
+    observation = _observation()
+    observation["images"]["head"] = np.zeros((224, 224, 3), dtype=np.uint8)
+
+    with pytest.raises(ValueError, match="image history 'head' must have shape"):
+        build_policy_payload(observation)
 
 
 class _FakePolicy:
@@ -78,11 +118,11 @@ class _FakePolicy:
         pass
 
 
-def test_remote_policy_accepts_a_30_step_action_chunk() -> None:
+def test_remote_policy_accepts_a_40_step_action_chunk() -> None:
     policy = DreamTacRemotePolicy(_FakePolicy(), default_prompt="task prompt")
     result = policy.infer(_observation())
 
-    assert result["actions"].shape == (30, 20)
+    assert result["actions"].shape == (40, 20)
 
 
 class _CountingChunkPolicy:
@@ -99,17 +139,17 @@ class _CountingChunkPolicy:
         pass
 
 
-def test_client_executes_20_actions_then_discards_the_10_step_tail() -> None:
+def test_client_executes_the_full_40_step_chunk_by_default() -> None:
     execution_horizon = Args().action_execution_horizon
-    assert execution_horizon == 20
+    assert execution_horizon == 40
 
     inner = _CountingChunkPolicy()
     broker = action_chunk_broker.ActionChunkBroker(
         policy=inner,
         action_horizon=execution_horizon,
     )
-    executed = [float(broker.infer({})["actions"][0]) for _ in range(21)]
+    executed = [float(broker.infer({})["actions"][0]) for _ in range(41)]
 
-    assert executed[:20] == list(range(20))
-    assert executed[20] == 100.0
+    assert executed[:40] == list(range(40))
+    assert executed[40] == 100.0
     assert inner.calls == 2

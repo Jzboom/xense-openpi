@@ -9,17 +9,18 @@ server on a separate GPU computer.
 
 ```text
 LeRobot-Xense recipe -> BiFlexivRizon4RTConfig
-  20D state + head/wrists + four tactile frames
+  current 20D state + seven synchronized camera frames
         |
         v
 DreamTacBiFlexivEnvironment
-  direct 224x224 resize + consecutive-frame tactile gate
+  RGB history [-3,-2,-1,0] (recent temporal context)
+  tactile pair merge + history [-3,-2,-1,0] + consecutive-frame gate
         |
         v
 DreamTacRemotePolicy -> Dream-Tac WebSocket server
         |
         v
-(30, 20) absolute action chunk -> robot.send_action()
+(40, 20) absolute action chunk -> robot.send_action()
 ```
 
 The state/action order is:
@@ -28,13 +29,17 @@ The state/action order is:
 [left_tcp(0:9), right_tcp(9:18), left_gripper(18), right_gripper(19)]
 ```
 
-Dream-Tac requires exactly seven views: `head`, both wrists and two tactile
-cameras per gripper. `images_raw` is never sent to the inference server; when
+The robot environment captures seven views: `head`, both wrists and two tactile
+cameras per gripper. Before transmission, each gripper's raw tactile pair is
+stacked vertically, resized to `224x196`, and padded horizontally to `224x224`.
+The RPC therefore carries only five condition views: three RGB and
+`left_tactile_merged`/`right_tactile_merged`. `images_raw` is never sent to the inference server; when
 `--args.include-raw-images` is enabled it stays in the local observation.
-The three RGB views are resized to `224x224` on the robot computer. The four
-raw `400x700` tactile views are sent without resizing because the inference
-server must merge each sensor pair before applying the training-time resize
-and padding.
+Each request carries four chronological frames per camera. All five views use
+the recent offsets `[-3,-2,-1,0]`. At episode start, unavailable history is padded by repeating
+the first frame, matching training. All five transmitted histories have shape
+`(4,224,224,3)`, reducing the uncompressed request from about 15.25 MB to
+3.01 MB. The server retains the training-time deterministic center crop.
 
 ## Robot recipe
 
@@ -110,7 +115,7 @@ cd /path/to/Dream-Tac
 
 export DREAMTAC_CKPT=/path/to/checkpoint
 export DREAMTAC_WAN_VAE=/path/to/tokenizer.pth
-export DREAMTAC_STATS=/path/to/dataset_statistics_lerobot_bi_flexiv.json
+export DREAMTAC_STATS=/path/to/dataset_statistics_lerobot_bi_flexiv_chunk40.json
 export DREAMTAC_T5=/path/to/t5_embeddings.pkl
 export DREAMTAC_DEFAULT_PROMPT='the exact prompt stored in the T5 cache'
 
@@ -119,7 +124,8 @@ python -m cosmos_policy.experiments.robot.bi_flexiv.bi_flexiv_server \
   --port 8000 \
   --action-output absolute_from_state \
   --normalization-mode q99 \
-  --num-denoising-steps 10
+  --num-denoising-steps 10 \
+  --diffusion-step-cache
 ```
 
 The server warms the model before opening the port. Its health endpoint is:
@@ -139,8 +145,8 @@ mamba activate lerobot-xense
 
 python -m examples.dreamtac_bi_flexiv.main \
   --args.run dry-run \
-  --args.robot-recipe /path/to/lerobot-xense/recipes/teleop/bi_flexiv_rizon4_rt/forward-05-xgripper.yaml \
-  --args.host 192.168.2.100 \
+  --args.robot-recipe /home/xense-sn0/lerobot-xense/recipes/teleop/bi_flexiv_rizon4_rt/forward-04-xgripper.yaml \
+  --args.host 192.168.204.183 \
   --args.port 8000
 ```
 
@@ -159,7 +165,7 @@ python -m examples.dreamtac_bi_flexiv.main \
   --args.port 8000 \
   --args.runtime-hz 30 \
   --args.action-hz 30 \
-  --args.action-execution-horizon 20
+  --args.action-execution-horizon 40
 ```
 
 The server default prompt is used unless `--args.prompt` is supplied. A supplied
@@ -167,11 +173,10 @@ prompt must be an exact key in the server's T5 embedding cache unless the server
 was started with prompt fallback enabled.
 
 Dream-Tac does not support OpenPI RTC. `action_hz=0` is the recommended first
-deployment. The model and server contract remain 30 steps, while
-`--args.action-execution-horizon 20` executes only actions 0-19 from each chunk,
-discards actions 20-29, and requests a fresh 30-step prediction. After that path
-is validated, `--args.action-hz 30` enables the existing decoupled observation
-and action runtime; it is pacing, not RTC.
+deployment. The history model and server contract are 40 steps, and the default
+client execution horizon is also 40 so no predicted tail is discarded. After
+that path is validated, `--args.action-hz 30` enables the existing decoupled
+observation and action runtime; it is pacing, not RTC.
 
 Press Ctrl+C once for graceful shutdown and homing. A second Ctrl+C forces the
 process to exit and can leave the arms away from home.

@@ -10,9 +10,13 @@ from xense_client import base_policy as _base_policy
 
 from examples.dreamtac_bi_flexiv.observation import ACTION_DIM
 from examples.dreamtac_bi_flexiv.observation import ACTION_HORIZON
-from examples.dreamtac_bi_flexiv.observation import CAMERA_KEYS
 from examples.dreamtac_bi_flexiv.observation import DEFAULT_IMAGE_SIZE
+from examples.dreamtac_bi_flexiv.observation import FUTURE_IMAGE_OFFSETS
+from examples.dreamtac_bi_flexiv.observation import HISTORY_FRAMES
+from examples.dreamtac_bi_flexiv.observation import RGB_HISTORY_OFFSETS
 from examples.dreamtac_bi_flexiv.observation import STATE_DIM
+from examples.dreamtac_bi_flexiv.observation import TACTILE_HISTORY_OFFSETS
+from examples.dreamtac_bi_flexiv.observation import TRANSPORT_CAMERA_KEYS
 
 
 def validate_server_metadata(metadata: Mapping[str, Any]) -> None:
@@ -25,6 +29,7 @@ def validate_server_metadata(metadata: Mapping[str, Any]) -> None:
         "action_space": "absolute_tcp18_absolute_gripper2",
         "normalization_mode": "q99",
         "future_image_horizon": ACTION_HORIZON,
+        "history_frames": HISTORY_FRAMES,
         "state_t": 11,
         "num_conditional_frames": 7,
         "rtc_supported": False,
@@ -35,12 +40,29 @@ def validate_server_metadata(metadata: Mapping[str, Any]) -> None:
         if metadata.get(key) != value
     ]
 
+    sequence_fields = {
+        "rgb_history_offsets": RGB_HISTORY_OFFSETS,
+        "tactile_history_offsets": TACTILE_HISTORY_OFFSETS,
+        "future_image_offsets": FUTURE_IMAGE_OFFSETS,
+    }
+    for key, expected_value in sequence_fields.items():
+        actual_value = tuple(metadata.get(key, ()))
+        if actual_value != expected_value:
+            errors.append(f"{key}={actual_value!r}, expected {expected_value!r}")
+
     camera_keys = tuple(metadata.get("camera_keys", ()))
-    if camera_keys != CAMERA_KEYS:
-        errors.append(f"camera_keys={camera_keys!r}, expected {CAMERA_KEYS!r}")
+    if camera_keys != TRANSPORT_CAMERA_KEYS:
+        errors.append(f"camera_keys={camera_keys!r}, expected {TRANSPORT_CAMERA_KEYS!r}")
     image_shape = tuple(metadata.get("image_shape", ()))
-    if image_shape != (DEFAULT_IMAGE_SIZE, DEFAULT_IMAGE_SIZE, 3):
-        errors.append(f"image_shape={image_shape!r}, expected {(DEFAULT_IMAGE_SIZE, DEFAULT_IMAGE_SIZE, 3)!r}")
+    expected_image_shape = (HISTORY_FRAMES, DEFAULT_IMAGE_SIZE, DEFAULT_IMAGE_SIZE, 3)
+    if image_shape != expected_image_shape:
+        errors.append(f"image_shape={image_shape!r}, expected {expected_image_shape!r}")
+    camera_history_shape = tuple(metadata.get("camera_history_shape", ()))
+    if camera_history_shape != expected_image_shape:
+        errors.append(f"camera_history_shape={camera_history_shape!r}, expected {expected_image_shape!r}")
+    future_image_shape = tuple(metadata.get("future_image_shape", ()))
+    if future_image_shape != expected_image_shape:
+        errors.append(f"future_image_shape={future_image_shape!r}, expected {expected_image_shape!r}")
     if errors:
         raise ValueError("Incompatible Dream-Tac server metadata: " + "; ".join(errors))
 
@@ -56,9 +78,19 @@ def build_policy_payload(observation: Mapping[str, Any], *, default_prompt: str 
     images = observation.get("images")
     if not isinstance(images, Mapping):
         raise ValueError("observation must contain an 'images' mapping")
-    missing = [name for name in CAMERA_KEYS if name not in images]
+    missing = [name for name in TRANSPORT_CAMERA_KEYS if name not in images]
     if missing:
         raise ValueError(f"observation is missing Dream-Tac cameras: {missing}")
+
+    prepared_images: dict[str, np.ndarray] = {}
+    expected_shape = (HISTORY_FRAMES, DEFAULT_IMAGE_SIZE, DEFAULT_IMAGE_SIZE, 3)
+    for name in TRANSPORT_CAMERA_KEYS:
+        image = np.asarray(images[name])
+        if image.shape != expected_shape:
+            raise ValueError(f"image history {name!r} must have shape {expected_shape}, got {image.shape}")
+        if image.dtype != np.uint8:
+            raise ValueError(f"image history {name!r} must have dtype uint8, got {image.dtype}")
+        prepared_images[name] = np.ascontiguousarray(image)
 
     gate = np.asarray(observation.get("tactile_self_attn_gate"), dtype=np.float32)
     if gate.shape != (2,):
@@ -68,7 +100,7 @@ def build_policy_payload(observation: Mapping[str, Any], *, default_prompt: str 
 
     payload: dict[str, Any] = {
         "state": np.ascontiguousarray(state),
-        "images": {name: images[name] for name in CAMERA_KEYS},
+        "images": prepared_images,
         "tactile_self_attn_gate": np.ascontiguousarray(gate),
     }
     if "observation_seq" in observation:

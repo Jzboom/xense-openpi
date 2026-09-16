@@ -100,7 +100,7 @@ class Args:
     # Observation/action scheduling.
     runtime_hz: float = 30.0
     action_hz: float = 0.0
-    action_execution_horizon: int = 20
+    action_execution_horizon: int = ACTION_HORIZON
     paced_queue_size: int = 50
     num_episodes: int = 1
     max_episode_steps: int = 1_000_000

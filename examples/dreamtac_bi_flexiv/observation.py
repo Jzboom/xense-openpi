@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Mapping
 import math
 
@@ -17,12 +18,20 @@ LEFT_TACTILE_KEYS = ("left_tactile_left", "left_tactile_right")
 RIGHT_TACTILE_KEYS = ("right_tactile_left", "right_tactile_right")
 TACTILE_KEYS = LEFT_TACTILE_KEYS + RIGHT_TACTILE_KEYS
 CAMERA_KEYS = RGB_CAMERA_KEYS + TACTILE_KEYS
+MERGED_TACTILE_KEYS = ("left_tactile_merged", "right_tactile_merged")
+TRANSPORT_CAMERA_KEYS = RGB_CAMERA_KEYS + MERGED_TACTILE_KEYS
 
 STATE_DIM = 20
 ACTION_DIM = 20
-ACTION_HORIZON = 30
+ACTION_HORIZON = 40
 DEFAULT_IMAGE_SIZE = 224
 TACTILE_IMAGE_SHAPE = (400, 700, 3)
+TACTILE_CONTENT_WIDTH = 196
+TACTILE_HORIZONTAL_PADDING = 14
+HISTORY_FRAMES = 4
+RGB_HISTORY_OFFSETS = (-3, -2, -1, 0)
+TACTILE_HISTORY_OFFSETS = (-3, -2, -1, 0)
+FUTURE_IMAGE_OFFSETS = (10, 20, 30, 40)
 
 
 def coerce_hwc_uint8(image: object, *, name: str) -> np.ndarray:
@@ -42,27 +51,98 @@ def coerce_hwc_uint8(image: object, *, name: str) -> np.ndarray:
 def prepare_policy_images(
     images: Mapping[str, object], *, image_size: int = DEFAULT_IMAGE_SIZE
 ) -> dict[str, np.ndarray]:
-    """Prepare RGB views while preserving raw tactile frames for model-side merging.
-
-    The Dream-Tac server merges each gripper's two 400x700 tactile frames
-    vertically before resizing and padding. Resizing the two sensor frames on
-    the robot computer would change that geometry and no longer match training.
-    """
+    """Build the five compact condition views sent to the policy server."""
     if image_size <= 0:
         raise ValueError(f"image_size must be positive, got {image_size}")
+    if image_size != DEFAULT_IMAGE_SIZE:
+        raise ValueError(f"Dream-Tac merged tactile preprocessing requires image_size={DEFAULT_IMAGE_SIZE}")
     missing = [name for name in CAMERA_KEYS if name not in images]
     if missing:
         raise ValueError(f"Missing Dream-Tac cameras: {missing}")
 
     prepared: dict[str, np.ndarray] = {}
-    for name in CAMERA_KEYS:
+    for name in RGB_CAMERA_KEYS:
         image = coerce_hwc_uint8(images[name], name=name)
-        if name in RGB_CAMERA_KEYS and image.shape[:2] != (image_size, image_size):
+        if image.shape[:2] != (image_size, image_size):
             image = cv2.resize(image, (image_size, image_size), interpolation=cv2.INTER_AREA)
-        elif name in TACTILE_KEYS and image.shape != TACTILE_IMAGE_SHAPE:
-            raise ValueError(f"Tactile image {name!r} must retain raw shape {TACTILE_IMAGE_SHAPE}, got {image.shape}")
         prepared[name] = np.ascontiguousarray(image)
+
+    for arm, pair in (
+        ("left", LEFT_TACTILE_KEYS),
+        ("right", RIGHT_TACTILE_KEYS),
+    ):
+        first = coerce_hwc_uint8(images[pair[0]], name=pair[0])
+        second = coerce_hwc_uint8(images[pair[1]], name=pair[1])
+        for name, image in zip(pair, (first, second), strict=True):
+            if image.shape != TACTILE_IMAGE_SHAPE:
+                raise ValueError(
+                    f"Tactile image {name!r} must retain raw shape {TACTILE_IMAGE_SHAPE}, got {image.shape}"
+                )
+        stacked = np.concatenate((first, second), axis=0)
+        resized = cv2.resize(
+            stacked,
+            (TACTILE_CONTENT_WIDTH, image_size),
+            interpolation=cv2.INTER_AREA,
+        )
+        merged = cv2.copyMakeBorder(
+            resized,
+            0,
+            0,
+            TACTILE_HORIZONTAL_PADDING,
+            TACTILE_HORIZONTAL_PADDING,
+            borderType=cv2.BORDER_CONSTANT,
+            value=(0, 0, 0),
+        )
+        expected_shape = (image_size, image_size, 3)
+        if merged.shape != expected_shape:
+            raise RuntimeError(f"Unexpected merged tactile shape: {merged.shape}, expected {expected_shape}")
+        prepared[f"{arm}_tactile_merged"] = np.ascontiguousarray(merged)
     return prepared
+
+
+class CameraHistoryBuffer:
+    """Assemble the recent RGB and tactile histories used in training."""
+
+    def __init__(self) -> None:
+        self._frames = {
+            name: deque(maxlen=-min(RGB_HISTORY_OFFSETS) + 1) for name in RGB_CAMERA_KEYS
+        }
+        self._frames.update(
+            {name: deque(maxlen=-min(TACTILE_HISTORY_OFFSETS) + 1) for name in MERGED_TACTILE_KEYS}
+        )
+
+    def reset(self) -> None:
+        for frames in self._frames.values():
+            frames.clear()
+
+    def update(self, images: Mapping[str, object]) -> dict[str, np.ndarray]:
+        """Append one synchronized observation and return chronological THWC histories.
+
+        Before enough observations exist, offsets before the beginning are
+        clamped to the first frame, matching the training dataset.
+        """
+        missing = [name for name in TRANSPORT_CAMERA_KEYS if name not in images]
+        if missing:
+            raise ValueError(f"Missing Dream-Tac cameras for history: {missing}")
+
+        for name in TRANSPORT_CAMERA_KEYS:
+            current = coerce_hwc_uint8(images[name], name=name)
+            frames = self._frames[name]
+            if frames and current.shape != frames[-1].shape:
+                raise ValueError(
+                    f"Camera {name!r} changed shape from {frames[-1].shape} to {current.shape}"
+                )
+            frames.append(current.copy())
+
+        histories: dict[str, np.ndarray] = {}
+        for name in TRANSPORT_CAMERA_KEYS:
+            offsets = RGB_HISTORY_OFFSETS if name in RGB_CAMERA_KEYS else TACTILE_HISTORY_OFFSETS
+            frames = self._frames[name]
+            latest = len(frames) - 1
+            histories[name] = np.ascontiguousarray(
+                np.stack([frames[max(0, latest + offset)] for offset in offsets], axis=0)
+            )
+        return histories
 
 
 def mean_abs_frame_delta(current: np.ndarray, previous: np.ndarray) -> float:
