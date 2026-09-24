@@ -79,3 +79,19 @@ def test_request_stop_ends_run_promptly():
     # 1 episode reset + 1 final reset in run() = 2 total. Episodes 2 and 3
     # were skipped because _stop_requested was set.
     assert env._reset_count == 2, f"expected 1 episode + 1 final reset = 2, got {env._reset_count}"
+
+
+def test_max_episode_steps_counts_actions_exactly():
+    for limit in (1, 3):
+        env = FakeEnv(obs_period_s=0)
+        runtime = Runtime(
+            environment=env,
+            agent=FakeAgent(),
+            subscribers=[],
+            max_hz=0,
+            num_episodes=1,
+            max_episode_steps=limit,
+        )
+        runtime.run()
+        assert len(env.applied) == limit
+        assert env._reset_count == 2

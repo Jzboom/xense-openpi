@@ -10,6 +10,9 @@ import signal
 import threading
 from typing import override
 
+# Set the session log location before importing lerobot.utils.robot_utils.
+os.environ.setdefault("XENSE_LOG_DIR", str(pathlib.Path(__file__).resolve().parent / "logs"))
+
 from lerobot.utils.robot_utils import get_logger
 import numpy as np
 from xense_client import action_chunk_broker
@@ -26,6 +29,8 @@ from examples.dreamtac_bi_flexiv.observation import ACTION_DIM
 from examples.dreamtac_bi_flexiv.observation import ACTION_HORIZON
 from examples.dreamtac_bi_flexiv.policy_adapter import DreamTacRemotePolicy
 from examples.dreamtac_bi_flexiv.policy_adapter import validate_server_metadata
+from examples.dreamtac_bi_flexiv.rtc_client import DreamTacRTCActionChunkBroker
+from examples.dreamtac_bi_flexiv.rtc_client import DreamTacWebsocketClientPolicy
 from examples.dreamtac_bi_flexiv.robot_config import validate_dreamtac_robot_config
 import examples.run_config as _run_config
 
@@ -105,6 +110,13 @@ class Args:
     num_episodes: int = 1
     max_episode_steps: int = 1_000_000
 
+    # Explicit RTC mode. It uses the synchronous 30 Hz control loop so each
+    # broker consumption corresponds to one action actually sent to the robot.
+    rtc: bool = False
+    rtc_prefix: int = 14
+    rtc_delay_margin: int = 2
+    rtc_request_timeout: float = 120.0
+
     # Safety/debugging. This still connects and resets the real robot.
     dry_run: bool = False
 
@@ -128,6 +140,10 @@ def main(args: Args) -> None:
             f"--args.action-execution-horizon must be in [1, {ACTION_HORIZON}], "
             f"got {args.action_execution_horizon}"
         )
+    if args.rtc and args.action_hz > 0:
+        raise SystemExit("RTC uses --args.runtime-hz for the control loop; leave --args.action-hz at 0")
+    if args.rtc and args.action_execution_horizon != ACTION_HORIZON:
+        raise SystemExit(f"RTC requires the full {ACTION_HORIZON}-step action horizon")
 
     # Decode and validate the bench before waiting for the policy server or
     # touching hardware. Current lerobot-xense no longer has bi_mount_type or a
@@ -150,20 +166,39 @@ def main(args: Args) -> None:
         f"gripper={robot_config.gripper.type})"
     )
 
-    websocket_policy = websocket_client_policy.WebsocketClientPolicy(host=args.host, port=args.port)
+    if args.rtc:
+        websocket_policy = DreamTacWebsocketClientPolicy(
+            host=args.host, port=args.port, request_timeout=args.rtc_request_timeout,
+        )
+    else:
+        websocket_policy = websocket_client_policy.WebsocketClientPolicy(host=args.host, port=args.port)
     metadata = websocket_policy.get_server_metadata()
-    validate_server_metadata(metadata)
+    validate_server_metadata(metadata, require_rtc=args.rtc)
     logger.info(f"Connected to Dream-Tac server: {metadata}")
-    logger.info(
-        f"Action chunk execution: first {args.action_execution_horizon}/{ACTION_HORIZON} actions; "
-        f"discard {ACTION_HORIZON - args.action_execution_horizon} tail actions"
-    )
 
     remote_policy = DreamTacRemotePolicy(websocket_policy, default_prompt=args.prompt)
-    chunked_policy = action_chunk_broker.ActionChunkBroker(
-        policy=remote_policy,
-        action_horizon=args.action_execution_horizon,
-    )
+    if args.rtc:
+        chunked_policy = DreamTacRTCActionChunkBroker(
+            remote_policy,
+            frequency_hz=args.runtime_hz,
+            prefix=args.rtc_prefix,
+            delay_margin=args.rtc_delay_margin,
+            smooth_actions=True,
+            dry_run=args.dry_run,
+        )
+        logger.info(
+            f"RTC: {ACTION_HORIZON}-step absolute chunks, prefix={args.rtc_prefix}, "
+            f"delay_margin={args.rtc_delay_margin}, control_hz={args.runtime_hz}"
+        )
+    else:
+        chunked_policy = action_chunk_broker.ActionChunkBroker(
+            policy=remote_policy,
+            action_horizon=args.action_execution_horizon,
+        )
+        logger.info(
+            f"Action chunk execution: first {args.action_execution_horizon}/{ACTION_HORIZON} actions; "
+            f"discard {ACTION_HORIZON - args.action_execution_horizon} tail actions"
+        )
 
     base_environment = DreamTacBiFlexivEnvironment(
         robot_config=robot_config,
@@ -219,6 +254,15 @@ def main(args: Args) -> None:
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt")
     finally:
+        if args.rtc:
+            try:
+                chunked_policy.stop()
+            except Exception as exc:
+                logger.warn(f"Error stopping Dream-Tac RTC broker: {exc}")
+            try:
+                websocket_policy.cancel_pending()
+            except Exception as exc:
+                logger.warn(f"Error closing Dream-Tac RTC connection: {exc}")
         try:
             environment.disconnect()
         except Exception as exc:

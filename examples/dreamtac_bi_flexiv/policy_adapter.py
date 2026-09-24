@@ -19,7 +19,7 @@ from examples.dreamtac_bi_flexiv.observation import TACTILE_HISTORY_OFFSETS
 from examples.dreamtac_bi_flexiv.observation import TRANSPORT_CAMERA_KEYS
 
 
-def validate_server_metadata(metadata: Mapping[str, Any]) -> None:
+def validate_server_metadata(metadata: Mapping[str, Any], *, require_rtc: bool = False) -> None:
     """Fail fast when the robot connects to an incompatible inference server."""
     expected = {
         "service": "dreamtac-bi_flexiv",
@@ -32,13 +32,18 @@ def validate_server_metadata(metadata: Mapping[str, Any]) -> None:
         "history_frames": HISTORY_FRAMES,
         "state_t": 11,
         "num_conditional_frames": 7,
-        "rtc_supported": False,
     }
     errors = [
         f"{key}={metadata.get(key)!r}, expected {value!r}"
         for key, value in expected.items()
         if metadata.get(key) != value
     ]
+
+    rtc_supported = metadata.get("rtc_supported")
+    if not isinstance(rtc_supported, bool):
+        errors.append(f"rtc_supported={rtc_supported!r}, expected a boolean")
+    elif require_rtc and not rtc_supported:
+        errors.append("rtc_supported=False, expected True for RTC mode")
 
     sequence_fields = {
         "rgb_history_offsets": RGB_HISTORY_OFFSETS,
@@ -120,9 +125,9 @@ class DreamTacRemotePolicy(_base_policy.BasePolicy):
         self._default_prompt = default_prompt
 
     @override
-    def infer(self, obs: dict) -> dict:
+    def infer(self, obs: dict, **rtc_kwargs: Any) -> dict:
         payload = build_policy_payload(obs, default_prompt=self._default_prompt)
-        response = self._policy.infer(payload)
+        response = self._policy.infer(payload, **rtc_kwargs)
         if not isinstance(response, Mapping):
             raise ValueError(f"Dream-Tac response must be a mapping, got {type(response).__name__}")
 
@@ -139,11 +144,19 @@ class DreamTacRemotePolicy(_base_policy.BasePolicy):
                 f"--action-output absolute_from_state, got action_space={action_space!r}"
             )
 
+        if rtc_kwargs:
+            expected_prefix = rtc_kwargs.get("inference_delay")
+            if response.get("rtc_prefix_length") != expected_prefix:
+                raise ValueError(
+                    f"Dream-Tac RTC prefix length {response.get('rtc_prefix_length')!r} "
+                    f"does not match requested {expected_prefix!r}"
+                )
+
         result: dict[str, Any] = {
             "actions": np.ascontiguousarray(actions),
             "action_space": action_space,
         }
-        for key in ("server_timing", "normalized_action_clipped_fraction", "observation_seq"):
+        for key in ("server_timing", "normalized_action_clipped_fraction", "observation_seq", "rtc_prefix_length"):
             if key in response:
                 result[key] = response[key]
         return result
@@ -155,3 +168,9 @@ class DreamTacRemotePolicy(_base_policy.BasePolicy):
     @override
     def warmup(self, obs: dict) -> None:
         self._policy.warmup(build_policy_payload(obs, default_prompt=self._default_prompt))
+
+    def cancel_pending(self) -> None:
+        """Interrupt a stalled RTC request before stopping or resetting the broker."""
+        cancel = getattr(self._policy, "cancel_pending", None)
+        if cancel is not None:
+            cancel()

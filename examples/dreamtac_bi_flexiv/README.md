@@ -43,140 +43,39 @@ the first frame, matching training. All five transmitted histories have shape
 
 ## Robot recipe
 
-`bi_mount_type` and the old station table no longer exist in LeRobot-Xense.
-Pass `--args.robot-recipe` instead. A recipe contains the arm serial numbers,
-start/home poses, head camera and typed gripper block.
+This bench uses
+`/home/xense-sn0/lerobot-xense/recipes/teleop/bi_flexiv_rizon4_rt/forward-04-xgripper.yaml`.
+The recipe defines both arms, grippers, cameras and start/home poses.
+Dream-Tac uses a 20D action and disables force control.
 
-Prefer an explicit path to the current recipe in the LeRobot-Xense checkout:
+## Start the live RTC policy
 
-```bash
-ls /path/to/lerobot-xense/recipes/teleop/bi_flexiv_rizon4_rt/
-```
-
-Choose the file that matches both the physical bench and gripper family, for
-example `forward-05-taccap.yaml` or `forward-05-xgripper.yaml`. Before running,
-verify the arm serial numbers and ensure its gripper block contains:
-
-```yaml
-robot:
-  gripper:
-    auto_discover_cameras: true
-    enable_tactile: true
-```
-
-Dream-Tac pins `use_force: false`: its action vector has no wrench dimensions.
-A recipe with only one gripper, no head camera, or neither camera discovery nor
-seven explicitly pinned views is rejected before the policy client or hardware
-connection starts.
-
-## Robot-computer installation
-
-Create/install the LeRobot-Xense environment using that repository's installer.
-For a Flexiv bench with TacCap grippers:
+On the robot computer (`192.168.204.236`), use the `lerobot-xense` Conda
+environment. The Dream-Tac inference server at `192.168.204.183:8000` must
+already be running with the 40k checkpoint. These are the only shell commands
+needed on the robot computer; the first selects the `jhn` checkout's client
+package. The second **sends predicted actions to the real robot**.
 
 ```bash
-cd /path/to/lerobot-xense
-git submodule update --init --recursive
-bash setup_env.sh --mamba lerobot-xense       # one-time environment creation
-mamba activate lerobot-xense
-bash setup_env.sh --install --flexiv --taccap
-```
-
-For serial/XGripper hardware, `--install --flexiv` installs the Flexiv and Xense
-stack. Then install only the lightweight OpenPI robot client and CLI helpers:
-
-```bash
-python -m pip install -e /path/to/xense-openpi/packages/xense-client
-python -m pip install "tyro>=0.9.5" dm-env pyyaml
-```
-
-Confirm that the editable package is the intended LeRobot-Xense checkout:
-
-```bash
-python - <<'PY'
-import lerobot
-import xense_client
-import flexiv_rt
-
-print("lerobot:", lerobot.__file__)
-print("xense_client:", xense_client.__file__)
-print("flexiv_rt:", flexiv_rt.__file__)
-PY
-```
-
-## Start the inference server
-
-On the GPU computer, start the Dream-Tac server with robot-ready absolute
-actions. The normalization mode must match the checkpoint (`q99` for current
-checkpoints; use `min_max` only for a checkpoint trained that way).
-
-```bash
-cd /path/to/Dream-Tac
-
-export DREAMTAC_CKPT=/path/to/checkpoint
-export DREAMTAC_WAN_VAE=/path/to/tokenizer.pth
-export DREAMTAC_STATS=/path/to/dataset_statistics_lerobot_bi_flexiv_chunk40.json
-export DREAMTAC_T5=/path/to/t5_embeddings.pkl
-export DREAMTAC_DEFAULT_PROMPT='the exact prompt stored in the T5 cache'
-
-python -m cosmos_policy.experiments.robot.bi_flexiv.bi_flexiv_server \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --action-output absolute_from_state \
-  --normalization-mode q99 \
-  --num-denoising-steps 10 \
-  --diffusion-step-cache
-```
-
-The server warms the model before opening the port. Its health endpoint is:
-
-```bash
-curl http://127.0.0.1:8000/healthz
-```
-
-## Start the robot client
-
-First use the supplied dry-run preset, while selecting the real bench recipe on
-the command line:
-
-```bash
-cd /path/to/xense-openpi
-mamba activate lerobot-xense
-
+export PYTHONPATH=/home/xense-sn0/jhn/xense-openpi:/home/xense-sn0/jhn/xense-openpi/packages/xense-client/src${PYTHONPATH:+:$PYTHONPATH}
 python -m examples.dreamtac_bi_flexiv.main \
-  --args.run dry-run \
-  --args.robot-recipe /home/xense-sn0/lerobot-xense/recipes/teleop/bi_flexiv_rizon4_rt/forward-04-xgripper.yaml \
-  --args.host 192.168.204.183 \
-  --args.port 8000
-```
-
-Dry-run prevents inferred actions from being sent, but it still connects to the
-real robot and episode reset moves both arms to the recipe's start pose. It also
-homes/disconnects normally. Treat it as a hardware operation, not a no-motion
-configuration.
-
-After checking all seven camera names, the 20D state/action ranges and the
-server metadata, start a real synchronous run:
-
-```bash
-python -m examples.dreamtac_bi_flexiv.main \
+  --args.rtc \
   --args.robot-recipe /home/xense-sn0/lerobot-xense/recipes/teleop/bi_flexiv_rizon4_rt/forward-04-xgripper.yaml \
   --args.host 192.168.204.183 \
   --args.port 8000 \
   --args.runtime-hz 30 \
-  --args.action-hz 30 \
-  --args.action-execution-horizon 40
+  --args.rtc-prefix 14 \
+  --args.rtc-delay-margin 2
 ```
 
-The server default prompt is used unless `--args.prompt` is supplied. A supplied
-prompt must be an exact key in the server's T5 embedding cache unless the server
-was started with prompt fallback enabled.
+This runs one episode with the default step limit of 1,000,000; press Ctrl+C
+once to stop gracefully and return to the home pose. RTC limits newly
+generated targets at 30 Hz to 8 mm of TCP translation, 2 degrees of TCP
+rotation, and 0.1 gripper units per step. It also limits the change in TCP
+translation to 3 mm/step² at chunk handover and brakes before stationary
+targets; frozen prefix actions stay unchanged. The
+`RTC generated suffix smoothing` log shows how often the limits are applied.
 
-Dream-Tac does not support OpenPI RTC. `action_hz=0` is the recommended first
-deployment. The history model and server contract are 40 steps, and the default
-client execution horizon is also 40 so no predicted tail is discarded. After
-that path is validated, `--args.action-hz 30` enables the existing decoupled
-observation and action runtime; it is pacing, not RTC.
-
-Press Ctrl+C once for graceful shutdown and homing. A second Ctrl+C forces the
-process to exit and can leave the arms away from home.
+Robot-side session logs are saved under `examples/dreamtac_bi_flexiv/logs/`
+inside this `jhn` checkout. `Step` and `Observed Step` record commanded and
+measured poses for comparison; the launch command is unchanged.

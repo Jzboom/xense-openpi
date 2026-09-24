@@ -32,6 +32,9 @@ class ActionQueue:
         self.last_index = 0
         self.rtc_enabled = rtc_enabled
         self.blend_steps = blend_steps
+        # RTC clients may validate the frozen prefix themselves and log merge
+        # timing after releasing their control-loop transaction lock.
+        self.log_merge_diagnostics = True
 
     def get(self) -> np.ndarray | None:
         """Get the next action from the queue.
@@ -182,7 +185,7 @@ class ActionQueue:
                 self._append_actions_queue(new_original_actions, new_processed_actions)
 
         # Log outside lock to avoid blocking get() calls
-        if real_delay is not None:
+        if real_delay is not None and self.log_merge_diagnostics:
             logger.info(f"RTC: Truncate at {truncate_delay}, estimated={estimated_delay}, real={real_delay}")
 
     def _replace_actions_queue(
@@ -213,7 +216,7 @@ class ActionQueue:
         # invariant is logged by the broker as "RTC Prefix Freeze Check"
         # (compares new[0:d] against what was actually sent). This log below
         # is kept for absolute-action policies where the two frames coincide.
-        if self.original_queue is not None and truncate_idx > 0:
+        if self.log_merge_diagnostics and self.original_queue is not None and truncate_idx > 0:
             aib = action_index_before_inference
             align_len = min(truncate_idx, len(self.original_queue) - aib, len(new_original_actions))
             if align_len > 0:
@@ -229,7 +232,7 @@ class ActionQueue:
                 )
 
         # Debug: Check actual jump at merge point
-        if self.queue is not None and truncate_idx < len(new_processed_actions):
+        if self.log_merge_diagnostics and self.queue is not None and truncate_idx < len(new_processed_actions):
             next_action = new_processed_actions[truncate_idx]
             # Compare with last executed action (the actual jump)
             last_executed_idx = self.last_index - 1

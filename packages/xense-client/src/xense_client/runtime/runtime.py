@@ -126,7 +126,7 @@ class Runtime:
         t4 = time.time()
 
         if self._environment.is_episode_complete() or (
-            self._max_episode_steps > 0 and self._episode_steps >= self._max_episode_steps
+            self._max_episode_steps > 0 and self._episode_steps + 1 >= self._max_episode_steps
         ):
             self.mark_episode_complete()
 

@@ -64,6 +64,7 @@ class DreamTacBiFlexivEnvironment(_environment.Environment):
         self._history_buffer = CameraHistoryBuffer()
         self._observation_seq = 0
         self._action_step = 0
+        self._last_state: np.ndarray | None = None
 
     @override
     def reset(self) -> None:
@@ -72,6 +73,7 @@ class DreamTacBiFlexivEnvironment(_environment.Environment):
         self._history_buffer.reset()
         self._observation_seq = 0
         self._action_step = 0
+        self._last_state = None
 
     @override
     def is_episode_complete(self) -> bool:
@@ -86,9 +88,11 @@ class DreamTacBiFlexivEnvironment(_environment.Environment):
         history_images = self._history_buffer.update(processed_images)
 
         self._observation_seq += 1
+        state = np.ascontiguousarray(raw_obs["qpos"], dtype=np.float32)
+        self._last_state = state.copy()
         observation = {
             "observation_seq": self._observation_seq,
-            "state": np.ascontiguousarray(raw_obs["qpos"], dtype=np.float32),
+            "state": state,
             "images": history_images,
             "tactile_self_attn_gate": tactile_gate,
         }
@@ -105,6 +109,11 @@ class DreamTacBiFlexivEnvironment(_environment.Environment):
             raise ValueError("Robot action contains NaN or Inf")
 
         self._action_step += 1
+        if self._last_state is not None:
+            state_text = " | ".join(
+                f"{label}={value:+.4f}" for label, value in zip(_ACTION_LABELS, self._last_state)
+            )
+            logger.debug(f"Observed Step {self._action_step}: {state_text}")
         action_text = " | ".join(f"{label}={value:+.4f}" for label, value in zip(_ACTION_LABELS, actions))
         logger.debug(f"Step {self._action_step}: {action_text}")
         self._env.send_action(actions)

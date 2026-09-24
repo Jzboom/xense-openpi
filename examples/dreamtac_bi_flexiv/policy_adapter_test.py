@@ -153,3 +153,48 @@ def test_client_executes_the_full_40_step_chunk_by_default() -> None:
     assert executed[:40] == list(range(40))
     assert executed[40] == 100.0
     assert inner.calls == 2
+
+
+def test_rtc_mode_requires_supported_server() -> None:
+    metadata = _metadata()
+    with pytest.raises(ValueError, match="rtc_supported=False"):
+        validate_server_metadata(metadata, require_rtc=True)
+    metadata["rtc_supported"] = True
+    validate_server_metadata(metadata, require_rtc=True)
+
+
+class _FakeRTCPolicy:
+    def __init__(self) -> None:
+        self.kwargs = None
+        self.cancelled = False
+        self.prefix_length = 14
+
+    def infer(self, _obs: dict, **kwargs: Any) -> dict[str, Any]:
+        self.kwargs = kwargs
+        return {
+            "actions": np.zeros((ACTION_HORIZON, ACTION_DIM), dtype=np.float32),
+            "action_space": "absolute_tcp18_absolute_gripper2",
+            "rtc_prefix_length": self.prefix_length,
+        }
+
+    def cancel_pending(self) -> None:
+        self.cancelled = True
+
+
+def test_rtc_policy_forwards_prefix_and_checks_server_response() -> None:
+    inner = _FakeRTCPolicy()
+    policy = DreamTacRemotePolicy(inner)
+    prefix = np.zeros((14, ACTION_DIM), dtype=np.float32)
+    response = policy.infer(
+        _observation(), prev_chunk_left_over=prefix,
+        inference_delay=14, execution_horizon=40,
+    )
+    assert inner.kwargs["inference_delay"] == 14
+    np.testing.assert_array_equal(inner.kwargs["prev_chunk_left_over"], prefix)
+    assert response["rtc_prefix_length"] == 14
+    policy.cancel_pending()
+    assert inner.cancelled
+
+    inner.prefix_length = 13
+    with pytest.raises(ValueError, match="RTC prefix length"):
+        policy.infer(_observation(), prev_chunk_left_over=prefix, inference_delay=14)
